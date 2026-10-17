@@ -17,6 +17,17 @@ local carryingCargo: { [Player]: boolean } = {}
 local wanted: { [Player]: boolean } = {}
 local wantedListeners: { WantedListener } = {}
 
+local function setWanted(player: Player, value: boolean)
+	if HeatService.isWanted(player) == value then
+		return
+	end
+	wanted[player] = if value then true else nil
+	player:SetAttribute("Wanted", value)
+	for _, listener in wantedListeners do
+		task.spawn(listener, player, value)
+	end
+end
+
 function HeatService.getHeat(player: Player): number
 	return heat[player] or 0
 end
@@ -29,23 +40,19 @@ function HeatService.add(player: Player, amount: number)
 	heat[player] = math.clamp(HeatService.getHeat(player) + amount, 0, Config.Heat.Max)
 end
 
+-- Wipes heat and the wanted state (after an arrest).
+function HeatService.clear(player: Player)
+	heat[player] = 0
+	player:SetAttribute("Heat", 0)
+	setWanted(player, false)
+end
+
 function HeatService.setCarryingCargo(player: Player, value: boolean)
 	carryingCargo[player] = if value then true else nil
 end
 
 function HeatService.onWantedChanged(listener: WantedListener)
 	table.insert(wantedListeners, listener)
-end
-
-local function setWanted(player: Player, value: boolean)
-	if HeatService.isWanted(player) == value then
-		return
-	end
-	wanted[player] = if value then true else nil
-	player:SetAttribute("Wanted", value)
-	for _, listener in wantedListeners do
-		task.spawn(listener, player, value)
-	end
 end
 
 local function isNearPatrol(position: Vector3): boolean

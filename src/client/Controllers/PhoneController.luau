@@ -88,12 +88,21 @@ local function onContractUpdated(status: Types.JobStatus, contract: Types.Contra
 	end
 	if status == "accepted" then
 		showObjective(`Pick up the cargo at {contract.pickupName}`)
+		HudController.setWaypoint(contract.pickupName, true)
 	elseif status == "pickedUp" then
 		showObjective(`Deliver to {contract.dropoffName}. Keep a low profile.`)
+		HudController.setWaypoint(contract.dropoffName, false)
 	elseif status == "delivered" then
 		showObjective(`Delivered. {contract.syndicate} paid ${contract.payout}.`, 4)
+		HudController.setWaypoint(nil)
+		HudController.showBanner("delivered", `+${contract.payout}`)
 	elseif status == "failed" then
 		showObjective("Job failed. The cargo is gone.", 4)
+		HudController.setWaypoint(nil)
+		HudController.showBanner("failed", "Job failed")
+	elseif status == "busted" then
+		showObjective("The police confiscated the cargo.", 4)
+		HudController.setWaypoint(nil)
 	end
 end
 

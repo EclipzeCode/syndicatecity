@@ -12,6 +12,10 @@ local FUNCTIONS = {
 
 local EVENTS = {
 	"ContractUpdated", -- server -> client: (status: JobStatus, contract: Contract?)
+	"Notice", -- server -> client: (kind: string, text: string) big center-screen banner
+	"FireWeapon", -- client -> server: (target: Vector3)
+	"ReloadWeapon", -- client -> server: ()
+	"ShotFired", -- server -> all clients: (origin: Vector3, hit: Vector3, hitCharacter: boolean)
 }
 
 local folder: Instance

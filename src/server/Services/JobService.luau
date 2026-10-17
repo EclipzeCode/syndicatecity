@@ -93,14 +93,24 @@ local function isWithinReach(player: Player, part: BasePart): boolean
 		and (root.Position - part.Position).Magnitude <= Config.Jobs.InteractDistance
 end
 
-local function failJob(player: Player)
+local function setCargo(player: Player, value: boolean)
+	HeatService.setCarryingCargo(player, value)
+	player:SetAttribute("HasCargo", value)
+end
+
+local function failJob(player: Player, status: Types.JobStatus)
 	local job = activeJobs[player]
 	if not job then
 		return
 	end
 	activeJobs[player] = nil
-	HeatService.setCarryingCargo(player, false)
-	notify(player, "failed", job.contract)
+	setCargo(player, false)
+	notify(player, status, job.contract)
+end
+
+-- Arrest: the police confiscate the cargo and the contract is over.
+function JobService.bust(player: Player)
+	failJob(player, "busted")
 end
 
 local function onAccept(player: Player, contractId: unknown): (boolean, string?)
@@ -127,7 +137,7 @@ local function onPickup(player: Player, part: BasePart)
 		return
 	end
 	job.hasCargo = true
-	HeatService.setCarryingCargo(player, true)
+	setCargo(player, true)
 	notify(player, "pickedUp", job.contract)
 end
 
@@ -137,7 +147,7 @@ local function onDropoff(player: Player, part: BasePart)
 		return
 	end
 	activeJobs[player] = nil
-	HeatService.setCarryingCargo(player, false)
+	setCargo(player, false)
 	-- TODO(v0.2): payment types (upfront, on delivery, undisclosed, items, scams) and skimming
 	PlayerDataService.addDirtyCash(player, job.contract.payout)
 	notify(player, "delivered", job.contract)
@@ -161,9 +171,10 @@ local function watchCharacter(player: Player)
 		local humanoid = character:WaitForChild("Humanoid") :: Humanoid
 		humanoid.Died:Connect(function()
 			local job = activeJobs[player]
-			if job and job.hasCargo then
+			-- wanted players who go down are arrested instead; PoliceService handles that
+			if job and job.hasCargo and not HeatService.isWanted(player) then
 				-- TODO(v0.3): dropped cargo becomes evidence
-				failJob(player)
+				failJob(player, "failed")
 			end
 		end)
 	end
