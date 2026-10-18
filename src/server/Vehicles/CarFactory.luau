@@ -1,9 +1,10 @@
 --!strict
--- Builds graybox car models out of parts: a collision chassis, a cabin with a dark glass band,
--- visual wheels, lights, a driver VehicleSeat and a passenger Seat. Blender meshes replace the
--- visual parts later; the chassis, seats and attributes stay the same.
+-- Builds car models: a collision chassis and cabin, a driver VehicleSeat and a passenger Seat,
+-- plus the visuals. Visuals come from the Blender mesh template in ServerStorage.Assets.Vehicles
+-- (imported by Tools.MeshImporter) when there is one; otherwise graybox parts stand in.
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ServerStorage = game:GetService("ServerStorage")
 
 local Config = require(ReplicatedStorage.Shared.Config)
 local Palette = require(ReplicatedStorage.Shared.Palette)
@@ -12,6 +13,86 @@ local CarFactory = {}
 
 local TIRE = Color3.fromRGB(34, 34, 38)
 local TRIM = Color3.fromRGB(70, 72, 80)
+
+-- graybox parts that only exist for looks; a mesh template replaces all of them
+local GRAYBOX_VISUALS = {
+	Windows = true,
+	Roof = true,
+	Bumper = true,
+	Headlight = true,
+	Taillight = true,
+	Wheel = true,
+	Hubcap = true,
+	DoorStripe = true,
+	LightBarBase = true,
+	SirenRed = true,
+	SirenBlue = true,
+}
+
+local function addHeadlightBeam(part: BasePart)
+	local light = Instance.new("SpotLight")
+	light.Face = Enum.NormalId.Front
+	light.Range = 50
+	light.Angle = 60
+	light.Brightness = 2
+	light.Color = Color3.fromRGB(255, 236, 200)
+	light.Parent = part
+end
+
+local function addSirenLight(part: BasePart)
+	local light = Instance.new("PointLight")
+	light.Color = part.Color
+	light.Range = 18
+	light.Brightness = 3
+	light.Enabled = false
+	light.Parent = part
+end
+
+local function meshTemplate(vehicleType: string): Model?
+	local assets = ServerStorage:FindFirstChild("Assets")
+	local vehicles = assets and assets:FindFirstChild("Vehicles")
+	return if vehicles then vehicles:FindFirstChild(vehicleType) :: Model? else nil
+end
+
+-- Swaps the graybox visuals for the mesh template. Template parts are laid out around the
+-- chassis centre, so each is placed relative to the chassis and welded to it.
+local function applyMeshes(model: Model, chassis: BasePart, template: Model, color: Color3)
+	for _, child in model:GetChildren() do
+		if GRAYBOX_VISUALS[child.Name] then
+			child:Destroy()
+		end
+	end
+	chassis.Transparency = 1
+	local cabin = model:FindFirstChild("Cabin") :: BasePart?
+	if cabin then
+		cabin.Transparency = 1
+	end
+	for _, source in template:GetChildren() do
+		if not source:IsA("BasePart") then
+			continue
+		end
+		local p = source:Clone()
+		p.Anchored = false
+		p.Massless = true
+		p.CanCollide = false
+		p.CanTouch = false
+		p.CanQuery = false
+		p.CFrame = chassis.CFrame * source.CFrame
+		if p.Name == "Body" then
+			p.Color = color
+		end
+		local weld = Instance.new("WeldConstraint")
+		weld.Part0 = chassis
+		weld.Part1 = p
+		weld.Parent = p
+		p.Parent = model
+		if p.Name == "HeadlightR" then
+			addHeadlightBeam(p)
+		elseif p.Name == "SirenRed" or p.Name == "SirenBlue" then
+			addSirenLight(p)
+		end
+	end
+end
 
 local function weldedPart(model: Model, chassis: BasePart, props: { [string]: any }): Part
 	local p = Instance.new("Part")
@@ -108,13 +189,7 @@ function CarFactory.build(vehicleType: string, color: Color3, cframe: CFrame): M
 			Material = Enum.Material.Neon,
 		})
 		if x == 1 then
-			local light = Instance.new("SpotLight")
-			light.Face = Enum.NormalId.Front
-			light.Range = 50
-			light.Angle = 60
-			light.Brightness = 2
-			light.Color = Color3.fromRGB(255, 236, 200)
-			light.Parent = head
+			addHeadlightBeam(head)
 		end
 		weldedPart(model, chassis, {
 			Name = "Taillight",
@@ -180,12 +255,7 @@ function CarFactory.build(vehicleType: string, color: Color3, cframe: CFrame): M
 				Color = if x < 0 then Palette.SirenRed else Palette.SirenBlue,
 				Material = Enum.Material.SmoothPlastic,
 			})
-			local light = Instance.new("PointLight")
-			light.Color = siren.Color
-			light.Range = 18
-			light.Brightness = 3
-			light.Enabled = false
-			light.Parent = siren
+			addSirenLight(siren)
 		end
 	end
 
@@ -221,6 +291,11 @@ function CarFactory.build(vehicleType: string, color: Color3, cframe: CFrame): M
 		weld.Part1 = passenger
 		weld.Parent = passenger
 		passenger.Parent = model
+	end
+
+	local template = meshTemplate(vehicleType)
+	if template then
+		applyMeshes(model, chassis, template, color)
 	end
 
 	return model

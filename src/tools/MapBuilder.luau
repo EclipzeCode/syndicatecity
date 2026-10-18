@@ -8,6 +8,7 @@
 local CollectionService = game:GetService("CollectionService")
 local Lighting = game:GetService("Lighting")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ServerStorage = game:GetService("ServerStorage")
 
 local Config = require(ReplicatedStorage.Shared.Config)
 local Palette = require(ReplicatedStorage.Shared.Palette)
@@ -391,9 +392,63 @@ end
 -- Buildings
 ---------------------------------------------------------------------------------------------------
 
--- A stylized building: a solid box with dark glass bands (one part per floor covers all four
--- faces), a roof cap and a colored awning on the street side.
+-- Blender building meshes imported by Tools.MeshImporter. Until they're imported, every
+-- building falls back to its graybox parts.
+local function buildingTemplate(name: string): Model?
+	local assets = ServerStorage:FindFirstChild("Assets")
+	local buildings = assets and assets:FindFirstChild("Buildings")
+	return if buildings then buildings:FindFirstChild(name) :: Model? else nil
+end
+
+-- Clones a template with its base at `base` and its street face (template -Z) toward `facing`.
+-- `color` tints the Body (wall) part.
+local function placeTemplate(
+	parent: Instance,
+	template: Model,
+	base: Vector3,
+	facing: Vector3,
+	color: Color3?,
+	name: string?
+): Model
+	local model = template:Clone()
+	model.Name = name or template.Name
+	model:PivotTo(CFrame.lookAt(base, base + facing))
+	local body = model:FindFirstChild("Body") :: BasePart?
+	if color and body then
+		body.Color = color
+	end
+	model.Parent = parent
+	return model
+end
+
+-- Picks the mesh variant whose fixed size best fits a lot MapBuilder sized for a graybox.
+local function buildingVariant(size: Vector3): string
+	local long, short = math.max(size.X, size.Z), math.min(size.X, size.Z)
+	if long >= 90 then
+		return if size.Y > 60 then "Tower" else "BrickBlock"
+	elseif short >= 40 then
+		return if size.Y < 60 then "Midrise" elseif size.Y < 95 then "Office" else "OfficeTall"
+	elseif size.Y <= 16 then
+		return "RestStop"
+	end
+	return if size.Y < 26 then "Shop" else "ShopTall"
+end
+
+-- A stylized building: the matching mesh variant, or as a graybox a solid box with dark glass
+-- bands (one part per floor covers all four faces), a roof cap and an awning on the street side.
 local function building(parent: Instance, center: Vector3, size: Vector3, color: Color3, streetDir: Vector3?)
+	local template = buildingTemplate(buildingVariant(size))
+	if template then
+		-- same random draws as the graybox below, so the rest of the layout doesn't shift
+		if size.Y > 50 then
+			rng:NextNumber()
+		end
+		if streetDir then
+			pick(Palette.Containers)
+		end
+		placeTemplate(parent, template, center, streetDir or Vector3.new(0, 0, -1), color, "Building")
+		return
+	end
 	local model = Instance.new("Model")
 	model.Name = "Building"
 	local base = center.Y
@@ -580,35 +635,47 @@ local function policeStationBlock(parent: Instance, x0: number, z0: number, x1: 
 	local sx, sz = blockBase(parent, x0, z0, x1, z1)
 	local cx, cz = (x0 + x1) / 2, (z0 + z1) / 2
 	local center = Vector3.new(cx, SIDEWALK_TOP, cz - 14)
-	local model = Instance.new("Model")
-	model.Name = "PoliceStation"
-	part(model, {
-		Name = "Body",
-		Size = Vector3.new(sx - 24, 30, sz * 0.5),
-		Position = center + Vector3.new(0, 15, 0),
-		Color = Palette.PoliceWhite,
-	})
-	part(model, {
-		Name = "Stripe",
-		Size = Vector3.new(sx - 23.6, 4, sz * 0.5 + 0.4),
-		Position = center + Vector3.new(0, 20, 0),
-		Color = Palette.PoliceNavy,
-	})
-	part(model, {
-		Name = "Windows",
-		Size = Vector3.new(sx - 23.6, 4, sz * 0.5 + 0.4),
-		Position = center + Vector3.new(0, 10, 0),
-		Color = Palette.Glass,
-		Reflectance = 0.15,
-	})
-	local sign = part(model, {
-		Name = "Sign",
-		Size = Vector3.new(30, 5, 0.6),
-		Position = center + Vector3.new(0, 26, sz * 0.25 + 0.4),
-		Color = Palette.PoliceNavy,
-	})
+	local template = buildingTemplate("PoliceStation")
+	local model: Model
+	local sign: BasePart
+	local signFace: Enum.NormalId
+	if template then
+		-- the station's street side is +Z
+		model = placeTemplate(parent, template, center, Vector3.new(0, 0, 1), nil, "PoliceStation")
+		sign = model:FindFirstChild("Sign") :: BasePart
+		signFace = Enum.NormalId.Front
+	else
+		model = Instance.new("Model")
+		model.Name = "PoliceStation"
+		part(model, {
+			Name = "Body",
+			Size = Vector3.new(sx - 24, 30, sz * 0.5),
+			Position = center + Vector3.new(0, 15, 0),
+			Color = Palette.PoliceWhite,
+		})
+		part(model, {
+			Name = "Stripe",
+			Size = Vector3.new(sx - 23.6, 4, sz * 0.5 + 0.4),
+			Position = center + Vector3.new(0, 20, 0),
+			Color = Palette.PoliceNavy,
+		})
+		part(model, {
+			Name = "Windows",
+			Size = Vector3.new(sx - 23.6, 4, sz * 0.5 + 0.4),
+			Position = center + Vector3.new(0, 10, 0),
+			Color = Palette.Glass,
+			Reflectance = 0.15,
+		})
+		sign = part(model, {
+			Name = "Sign",
+			Size = Vector3.new(30, 5, 0.6),
+			Position = center + Vector3.new(0, 26, sz * 0.25 + 0.4),
+			Color = Palette.PoliceNavy,
+		})
+		signFace = Enum.NormalId.Back
+	end
 	local gui = Instance.new("SurfaceGui")
-	gui.Face = Enum.NormalId.Back
+	gui.Face = signFace
 	gui.CanvasSize = Vector2.new(600, 100)
 	gui.Parent = sign
 	local label = Instance.new("TextLabel")
@@ -723,6 +790,11 @@ local function buildDowntown(map: Instance)
 end
 
 local function warehouse(parent: Instance, center: Vector3, size: Vector3, color: Color3, doorDir: Vector3)
+	local template = buildingTemplate(if size.Y >= 31 then "WarehouseLarge" else "WarehouseSmall")
+	if template then
+		placeTemplate(parent, template, center, doorDir, color, "Warehouse")
+		return
+	end
 	local model = Instance.new("Model")
 	model.Name = "Warehouse"
 	part(model, {
@@ -864,34 +936,40 @@ local function buildSouthStrip(map: Instance)
 	south.Name = "SouthStrip"
 
 	-- Sunset Motel (solo players' crash pad)
-	local motel = Instance.new("Model")
-	motel.Name = "SunsetMotel"
-	part(motel, {
-		Name = "Body",
-		Size = Vector3.new(110, 22, 26),
-		Position = Vector3.new(40, 11, 300),
-		Color = Palette.Buildings[6],
-	})
-	part(motel, {
-		Name = "Walkway",
-		Size = Vector3.new(110, 1, 8),
-		Position = Vector3.new(40, 11, 283),
-		Color = Palette.Buildings[1],
-	})
-	part(motel, {
-		Name = "Roof",
-		Size = Vector3.new(114, 1.4, 34),
-		Position = Vector3.new(40, 22.7, 296),
-		Color = Palette.Buildings[2],
-	})
-	for i = 0, 7 do
-		for _, y in { 4.5, 15.5 } do
-			part(motel, {
-				Name = "Door",
-				Size = Vector3.new(5, 8, 0.4),
-				Position = Vector3.new(-6 + i * 13, y, 286.8),
-				Color = Palette.Containers[2],
-			})
+	local motelTemplate = buildingTemplate("Motel")
+	local motel: Model
+	if motelTemplate then
+		motel = placeTemplate(south, motelTemplate, Vector3.new(40, GROUND_Y, 300), Vector3.new(0, 0, -1), nil, "SunsetMotel")
+	else
+		motel = Instance.new("Model")
+		motel.Name = "SunsetMotel"
+		part(motel, {
+			Name = "Body",
+			Size = Vector3.new(110, 22, 26),
+			Position = Vector3.new(40, 11, 300),
+			Color = Palette.Buildings[6],
+		})
+		part(motel, {
+			Name = "Walkway",
+			Size = Vector3.new(110, 1, 8),
+			Position = Vector3.new(40, 11, 283),
+			Color = Palette.Buildings[1],
+		})
+		part(motel, {
+			Name = "Roof",
+			Size = Vector3.new(114, 1.4, 34),
+			Position = Vector3.new(40, 22.7, 296),
+			Color = Palette.Buildings[2],
+		})
+		for i = 0, 7 do
+			for _, y in { 4.5, 15.5 } do
+				part(motel, {
+					Name = "Door",
+					Size = Vector3.new(5, 8, 0.4),
+					Position = Vector3.new(-6 + i * 13, y, 286.8),
+					Color = Palette.Containers[2],
+				})
+			end
 		end
 	end
 	local signPost = part(motel, {
@@ -959,48 +1037,53 @@ local function buildSouthStrip(map: Instance)
 		CollectionService:AddTag(pad, Config.Tags.CarSpawn)
 	end
 
-	-- gas station
-	local gas = Instance.new("Model")
+	-- gas station: canopy over the pumps, shop 50 studs behind it
+	local gasTemplate = buildingTemplate("GasStation")
+	local gas = if gasTemplate
+		then placeTemplate(south, gasTemplate, Vector3.new(-330, GROUND_Y, 240), Vector3.new(0, 0, -1))
+		else Instance.new("Model")
 	gas.Name = "GasStation"
-	part(gas, {
-		Name = "Canopy",
-		Size = Vector3.new(60, 2, 36),
-		Position = Vector3.new(-330, 18, 240),
-		Color = Palette.PoliceWhite,
-	})
-	part(gas, {
-		Name = "CanopyTrim",
-		Size = Vector3.new(60.4, 1.2, 36.4),
-		Position = Vector3.new(-330, 16.8, 240),
-		Color = Palette.Containers[1],
-	})
-	for _, x in { -350, -310 } do
+	if not gasTemplate then
 		part(gas, {
-			Name = "Pillar",
-			Size = Vector3.new(2, 17, 2),
-			Position = Vector3.new(x, 8.5, 240),
-			Color = Palette.Sidewalk,
+			Name = "Canopy",
+			Size = Vector3.new(60, 2, 36),
+			Position = Vector3.new(-330, 18, 240),
+			Color = Palette.PoliceWhite,
 		})
 		part(gas, {
-			Name = "Pump",
-			Size = Vector3.new(3, 6, 2),
-			Position = Vector3.new(x, 3, 246),
+			Name = "CanopyTrim",
+			Size = Vector3.new(60.4, 1.2, 36.4),
+			Position = Vector3.new(-330, 16.8, 240),
 			Color = Palette.Containers[1],
 		})
+		for _, x in { -350, -310 } do
+			part(gas, {
+				Name = "Pillar",
+				Size = Vector3.new(2, 17, 2),
+				Position = Vector3.new(x, 8.5, 240),
+				Color = Palette.Sidewalk,
+			})
+			part(gas, {
+				Name = "Pump",
+				Size = Vector3.new(3, 6, 2),
+				Position = Vector3.new(x, 3, 246),
+				Color = Palette.Containers[1],
+			})
+		end
+		part(gas, {
+			Name = "Shop",
+			Size = Vector3.new(40, 16, 24),
+			Position = Vector3.new(-330, 8, 290),
+			Color = Palette.Buildings[3],
+		})
+		part(gas, {
+			Name = "ShopWindow",
+			Size = Vector3.new(30, 7, 0.4),
+			Position = Vector3.new(-330, 5, 277.8),
+			Color = Palette.Glass,
+			Reflectance = 0.2,
+		})
 	end
-	part(gas, {
-		Name = "Shop",
-		Size = Vector3.new(40, 16, 24),
-		Position = Vector3.new(-330, 8, 290),
-		Color = Palette.Buildings[3],
-	})
-	part(gas, {
-		Name = "ShopWindow",
-		Size = Vector3.new(30, 7, 0.4),
-		Position = Vector3.new(-330, 5, 277.8),
-		Color = Palette.Glass,
-		Reflectance = 0.2,
-	})
 	gas.Parent = south
 	part(south, {
 		Name = "GasLot",
@@ -1065,21 +1148,26 @@ local function buildWoods(map: Instance)
 		end
 	end
 
-	-- the Old Sawmill clearing
-	local mill = Instance.new("Model")
+	-- the Old Sawmill clearing; the shed opens east, toward the log pile
+	local millTemplate = buildingTemplate("Sawmill")
+	local mill = if millTemplate
+		then placeTemplate(woods, millTemplate, Vector3.new(-770, GROUND_Y, -540), Vector3.new(1, 0, 0))
+		else Instance.new("Model")
 	mill.Name = "OldSawmill"
-	part(mill, {
-		Name = "Shed",
-		Size = Vector3.new(44, 18, 28),
-		Position = Vector3.new(-770, 9, -540),
-		Color = Palette.Wood,
-	})
-	part(mill, {
-		Name = "Roof",
-		Size = Vector3.new(48, 2, 32),
-		Position = Vector3.new(-770, 19, -540),
-		Color = Palette.Industrial[3],
-	})
+	if not millTemplate then
+		part(mill, {
+			Name = "Shed",
+			Size = Vector3.new(44, 18, 28),
+			Position = Vector3.new(-770, 9, -540),
+			Color = Palette.Wood,
+		})
+		part(mill, {
+			Name = "Roof",
+			Size = Vector3.new(48, 2, 32),
+			Position = Vector3.new(-770, 19, -540),
+			Color = Palette.Industrial[3],
+		})
+	end
 	for i = 0, 4 do
 		part(mill, {
 			Name = "Log",
