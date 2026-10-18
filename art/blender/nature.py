@@ -88,7 +88,7 @@ class Prop:
         if jitter:
             self.jitter(verts, jitter)
 
-    def finish(self, export=True):
+    def finish(self, export=True, folder="nature"):
         objs = []
         for key, b in self.batches.items():
             bm = b["bm"]
@@ -107,7 +107,7 @@ class Prop:
             obj.parent = self.root
             objs.append(obj)
         if export:
-            style.export_fbx(self.coll, os.path.join("nature", f"{self.name}.fbx"))
+            style.export_fbx(self.coll, os.path.join(folder, f"{self.name}.fbx"))
         return self.root
 
 
