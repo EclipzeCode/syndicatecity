@@ -93,6 +93,12 @@ local Config = {
 		DisabledSeconds = 20,
 	},
 
+	-- On-foot speeds in studs/second; hold Shift (or click the left stick) to sprint
+	Movement = {
+		WalkSpeed = 16,
+		SprintSpeed = 26,
+	},
+
 	Weapons = {
 		Pistol = {
 			Damage = 15,

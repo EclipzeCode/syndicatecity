@@ -2,6 +2,9 @@
   "name": "SmugglingGame",
   "tree": {
     "$className": "DataModel",
+    "ReplicatedFirst": {
+      "$path": "src/first"
+    },
     "ReplicatedStorage": {
       "Shared": {
         "$path": "src/shared"
@@ -13,6 +16,9 @@
       }
     },
     "StarterPlayer": {
+      "$properties": {
+        "EnableMouseLockOption": false
+      },
       "StarterPlayerScripts": {
         "Client": {
           "$path": "src/client"

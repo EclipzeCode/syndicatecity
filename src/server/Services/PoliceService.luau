@@ -322,7 +322,7 @@ function PoliceService.bust(player: Player, knockedOut: boolean?)
 			character:PivotTo(point)
 		end
 		if humanoid then
-			humanoid.WalkSpeed = 16
+			humanoid.WalkSpeed = Config.Movement.WalkSpeed
 		end
 	end)
 end
