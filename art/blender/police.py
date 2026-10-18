@@ -8,24 +8,23 @@ import importlib
 import os
 import sys
 
-import bpy
-
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import sedan  # noqa: E402
 
 importlib.reload(sedan)
+car = sedan.car
 style = sedan.style
 
 
 def build():
     d = sedan.build("Police", length=15.5, paint=style.PALETTE["PoliceWhite"])
-    part, hx, hy, hz = d.part, d.hx, d.hy, d.hz
+    part, hx, hy = d.part, d.hx, d.hy
 
     # navy band across the doors, stopping short of the wheel arches
     stripe_len = 2 * (d.wheel_y - d.wheel_radius - 0.5)
     stripe = part("DoorStripe", style.box((0.06, stripe_len, 0.9), (hx + 0.01, 0, 0.05)), "PoliceNavy")
     other = part("DoorStripeR", style.box((0.06, stripe_len, 0.9), (-hx - 0.01, 0, 0.05)), "PoliceNavy")
-    join(stripe, [other])
+    car.join(stripe, [other])
 
     # light bar on the flat of the roof
     base = part("LightBarBase", style.box((4.6, 1.2, 0.4), (0, d.cabin_offset, d.cabin_top + 0.2)), "Trim")
@@ -43,17 +42,9 @@ def build():
         part("PushBarTop", style.box((3.8, 0.3, 0.25), (0, y, 0.55)), "Trim"),
         part("PushBarLow", style.box((3.8, 0.3, 0.25), (0, y, -0.55)), "Trim"),
     ]
-    join(bar, pieces)
+    car.join(bar, pieces)
     return d
 
 
-def join(target, others):
-    bpy.ops.object.select_all(action="DESELECT")
-    for obj in [target, *others]:
-        obj.select_set(True)
-    bpy.context.view_layer.objects.active = target
-    bpy.ops.object.join()
-
-
 if __name__ == "__main__":
-    sedan.finish(build(), "Police")
+    car.finish(build(), "Police")
