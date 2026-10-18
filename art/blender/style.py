@@ -173,9 +173,10 @@ def cylinder_x(radius, width, center=(0, 0, 0), segments=12):
     """Cylinder whose axis runs along X (wheels)."""
     bm = bmesh.new()
     bmesh.ops.create_cone(bm, cap_ends=True, segments=segments, radius1=radius, radius2=radius, depth=width)
+    # (x, y, z) -> (z, x, y) is a rotation, so create_cone's outward winding survives. Don't
+    # recalc normals here: it guesses inside-out for short, wide cylinders like tires.
     for v in bm.verts:
         v.co = Vector((v.co.z, v.co.x, v.co.y)) + Vector(center)
-    bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
     return bm
 
 
