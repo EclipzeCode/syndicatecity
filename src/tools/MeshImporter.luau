@@ -5,6 +5,7 @@
 --   Assets.Vehicles.<Sedan|Police|Van>   (origin = Chassis centre, front = -Z)
 --   Assets.Buildings.<Name>               (origin = footprint centre on the ground, street = -Z)
 --   Assets.Nature.<Name>                  (trees, bush, rocks, grass tuft; origin on the ground)
+--   Assets.Environment.<Name>             (road tiles, sand, water, clouds; see art/blender/environment.py)
 -- Serve the JSON locally, then run from the command bar:
 --   python -m http.server 8765 --bind 127.0.0.1 --directory art/export/roblox
 --   require(game.ServerStorage.Tools.MeshImporter).importAll("http://127.0.0.1:8765")
@@ -12,7 +13,7 @@
 -- uploads parts whose geometry changed.
 --
 -- CreateAssetAsync only works in local plugins, and not on every account yet. Fallback: import
--- art/export/*.fbx, art/export/buildings/*.fbx and art/export/nature/*.fbx with File > Import 3D (anywhere in Workspace),
+-- art/export/*.fbx, art/export/buildings/*.fbx, art/export/nature/*.fbx and art/export/environment/*.fbx with File > Import 3D (anywhere in Workspace),
 -- then run MeshImporter.adoptAll("http://127.0.0.1:8765"). The JSON supplies each part's
 -- placement, size, color and collision, so the import's scale and position don't matter.
 
@@ -46,6 +47,25 @@ MeshImporter.Buildings = {
 	"Hangar",
 }
 MeshImporter.Nature = { "TreeRound", "TreePine", "TreeTall", "Bush", "RockA", "RockB", "RockC", "GrassTuft" }
+MeshImporter.Environment = {
+	"RoadStreet",
+	"RoadHighway",
+	"RoadDirt",
+	"RoadIntersection",
+	"RoadCurve",
+	"SandDuneA",
+	"SandDuneB",
+	"SandPatch",
+	"BeachSlope",
+	"Starfish",
+	"WaterTile",
+	"WaterDeep",
+	"WaveCrest",
+	"ShoreFoam",
+	"CloudA",
+	"CloudB",
+	"CloudC",
+}
 
 type PartData = {
 	name: string,
@@ -73,6 +93,8 @@ local COLLISION: { [string]: { [string]: Enum.CollisionFidelity } } = {
 		Rock = Enum.CollisionFidelity.Hull,
 	},
 	Vehicles = {},
+	-- pure dressing: roads keep their flat Parts underneath for driving
+	Environment = {},
 }
 
 local function assetsFolder(): Folder
@@ -239,6 +261,8 @@ local function categoryOf(name: string): string?
 		return "Buildings"
 	elseif table.find(MeshImporter.Nature, name) then
 		return "Nature"
+	elseif table.find(MeshImporter.Environment, name) then
+		return "Environment"
 	end
 	return nil
 end
@@ -340,6 +364,7 @@ function MeshImporter.importAll(baseUrl: string)
 		task.wait()
 	end
 	MeshImporter.importNew(baseUrl, MeshImporter.Nature, "Nature")
+	MeshImporter.importNew(baseUrl, MeshImporter.Environment, "Environment")
 end
 
 -- Imports just the named assets of one category (e.g. after adding a few in Blender).

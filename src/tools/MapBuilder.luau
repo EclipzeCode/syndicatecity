@@ -310,9 +310,153 @@ local function bridge(parent: Instance, a: Vector3, b: Vector3, width: number)
 	end
 end
 
+-- Low-poly road, sand and water pieces imported by Tools.MeshImporter
+-- (ServerStorage.Assets.Environment, built by art/blender/environment.py). Until they're imported,
+-- roads are drawn with flat Parts and painted strips, and the beaches stay bare.
+local function envTemplate(name: string): Model?
+	local assets = ServerStorage:FindFirstChild("Assets")
+	local env = assets and assets:FindFirstChild("Environment")
+	return if env then env:FindFirstChild(name) :: Model? else nil
+end
+
+-- road and foam tiles repeat every TILE studs; a road tile's top is TILE_TOP above its origin
+local TILE = 48
+local TILE_TOP = 1
+-- tiles sit this hair above the (invisible) road Parts cars drive on, so they never z-fight the
+-- plain asphalt left showing round the junctions
+local TILE_LIFT = 0.02
+-- RoadCurve's centreline radius, round its origin
+local CURVE_RADIUS = 36
+
+-- A clone of an environment template at `cf`, stretched by `sx` and `sz` along its own X and Z.
+-- Template parts are unrotated and placed relative to an origin pivot, so stretching is just
+-- scaling each part's size and offset. Pure dressing: nothing collides or casts a shadow.
+local function placeTile(parent: Instance, template: Model, cf: CFrame, sx: number, sz: number): Model
+	local model = template:Clone()
+	local stretch = Vector3.new(sx, 1, sz)
+	for _, p in model:GetChildren() do
+		if p:IsA("BasePart") then
+			local c = p.Position
+			p.Size *= stretch
+			p.CFrame = cf * CFrame.new(c * stretch) * p.CFrame.Rotation
+			p.CanCollide = false
+			p.CanQuery = false
+			p.CanTouch = false
+			p.CastShadow = false
+		end
+	end
+	model.WorldPivot = cf
+	model.Parent = parent
+	return model
+end
+
+local TILE_FOR_KIND: { [string]: string } = { street = "RoadStreet", wide = "RoadStreet", highway = "RoadHighway", dirt = "RoadDirt" }
+-- the tiles' own widths; wide truck roads are streets stretched sideways
+local TILE_WIDTH: { [string]: number } = { street = 36, wide = 36, highway = 56, dirt = 28 }
+
+-- How a node's joint is drawn with tiles: a crossroads tile where four streets meet square on, a
+-- curve tile where a street turns a right angle, otherwise the round Junction part ("disc").
+-- `trim` is how far from the node the edges' straight tiles stop.
+type Joint = { style: string, trim: number, dirs: { Vector3 } }
+
+local function jointOf(n: Node): Joint
+	local width, dirs, allStreet = 0, {}, true
+	for _, edge in edges do
+		if edge.a == n.id or edge.b == n.id then
+			local other = nodes[if edge.a == n.id then edge.b else edge.a].position
+			local d = other - n.position
+			table.insert(dirs, Vector3.new(d.X, 0, d.Z).Unit)
+			width = math.max(width, edgeWidth(edge.kind))
+			allStreet = allStreet and edge.kind == "street"
+		end
+	end
+	if allStreet and #dirs == 4 and envTemplate("RoadIntersection") then
+		local square = true
+		for _, d in dirs do
+			square = square and math.max(math.abs(d.X), math.abs(d.Z)) > 0.999
+		end
+		if square then
+			return { style = "cross", trim = STREET_WIDTH / 2, dirs = dirs }
+		end
+	elseif allStreet and #dirs == 2 and math.abs(dirs[1]:Dot(dirs[2])) < 1e-3 and envTemplate("RoadCurve") then
+		return { style = "curve", trim = CURVE_RADIUS, dirs = dirs }
+	end
+	return { style = "disc", trim = width / 2, dirs = dirs }
+end
+
+-- Lays one edge's straight tiles between its two joints, stretched a little so a whole number of
+-- them fits. Where an end meets a round junction, a flat pad fills the corners between the
+-- square tile end and the disc (what the old road Part's overrun past the node used to cover).
+local function tileEdge(parent: Instance, edge: Edge, joints: { [string]: Joint }, template: Model)
+	local a, b = nodes[edge.a].position, nodes[edge.b].position
+	local width = edgeWidth(edge.kind)
+	local flat = Vector3.new(b.X - a.X, 0, b.Z - a.Z)
+	local total = flat.Magnitude
+	local dir = flat / total
+	local trimA, trimB = joints[edge.a].trim, joints[edge.b].trim
+	local length = total - trimA - trimB
+	local top = ROAD_TOP + KIND_LIFT[edge.kind]
+	local y = top - TILE_TOP + TILE_LIFT
+	if length > 4 then
+		local count = math.max(1, math.round(length / TILE))
+		local step = length / count
+		for i = 0, count - 1 do
+			local mid = a + dir * (trimA + step * (i + 0.5))
+			local at = Vector3.new(mid.X, y, mid.Z)
+			placeTile(parent, template, CFrame.lookAt(at, at + dir), width / TILE_WIDTH[edge.kind], step / TILE)
+		end
+	end
+	for _, e in { { a, dir, trimA, joints[edge.a].style }, { b, -dir, trimB, joints[edge.b].style } } do
+		local origin: Vector3, d: Vector3, trim: number, style: string = e[1], e[2], e[3], e[4]
+		if style ~= "disc" then
+			continue
+		end
+		-- from a quarter width behind the node to just under the first tile
+		local from, to = -width / 4, math.min(trim + 0.5, total / 2)
+		local mid = origin + d * ((from + to) / 2)
+		local at = Vector3.new(mid.X, top - 0.5, mid.Z)
+		part(parent, {
+			Name = "RoadPad",
+			Size = Vector3.new(width, 1, to - from),
+			CFrame = CFrame.lookAt(at, at + d),
+			Color = if edge.kind == "dirt" then Palette.Dirt else Palette.Asphalt,
+			CanCollide = false,
+			CanQuery = false,
+			CanTouch = false,
+			CastShadow = false,
+		})
+	end
+end
+
+-- The crossroads or curve tile drawn over a node in place of its round Junction part.
+local function tileJoint(parent: Instance, n: Node, joint: Joint)
+	local y = ROAD_TOP + KIND_LIFT.street - TILE_TOP + TILE_LIFT
+	if joint.style == "cross" then
+		placeTile(parent, envTemplate("RoadIntersection") :: Model, CFrame.new(n.position.X, y, n.position.Z), 1, 1)
+	elseif joint.style == "curve" then
+		-- the curve's ends face its local -Z and +X from its corner at (-R, 0, R); turn it so
+		-- they face the two roads
+		local u, v = joint.dirs[1], joint.dirs[2]
+		if Vector3.yAxis:Cross(v):Dot(u) < 0 then
+			u, v = v, u
+		end
+		local centre = n.position + (u + v) * CURVE_RADIUS
+		placeTile(parent, envTemplate("RoadCurve") :: Model, CFrame.fromMatrix(Vector3.new(centre.X, y, centre.Z), v, Vector3.yAxis), 1, 1)
+	end
+end
+
 local function buildRoads(map: Instance)
 	local roads = Instance.new("Folder")
 	roads.Name = "Roads"
+	-- with the road tiles imported, the road Parts below stay for driving (and their Surface
+	-- attribute) but turn invisible, and the tiles draw the road and its markings instead
+	local tiled = envTemplate("RoadStreet") ~= nil and envTemplate("RoadHighway") ~= nil and envTemplate("RoadDirt") ~= nil
+	local joints: { [string]: Joint } = {}
+	if tiled then
+		for id, n in nodes do
+			joints[id] = jointOf(n)
+		end
+	end
 
 	for _, edge in edges do
 		local a, b = nodes[edge.a].position, nodes[edge.b].position
@@ -333,6 +477,7 @@ local function buildRoads(map: Instance)
 				CFrame = cf,
 				Color = color,
 				CastShadow = false,
+				Transparency = if tiled then 1 else 0,
 			})
 			road:SetAttribute("Surface", if edge.kind == "dirt" then "dirt" else "asphalt")
 
@@ -353,7 +498,7 @@ local function buildRoads(map: Instance)
 					CastShadow = false,
 				})
 			end
-			if lineLength > 0 then
+			if lineLength > 0 and not tiled then
 				if edge.kind == "dirt" then
 					-- two worn wheel ruts, a shade darker than the road
 					for _, side in { -1, 1 } do
@@ -384,6 +529,9 @@ local function buildRoads(map: Instance)
 				end
 			end
 		end
+		if tiled then
+			tileEdge(roads, edge, joints, envTemplate(TILE_FOR_KIND[edge.kind]) :: Model)
+		end
 		bridge(roads, a, b, width)
 	end
 
@@ -409,6 +557,11 @@ local function buildRoads(map: Instance)
 			CastShadow = false,
 		})
 		junction:SetAttribute("Surface", if kind == "dirt" then "dirt" else "asphalt")
+		local joint = joints[n.id]
+		if joint and joint.style ~= "disc" then
+			junction.Transparency = 1
+			tileJoint(roads, n, joint)
+		end
 	end
 	flush(roads, map)
 
@@ -1248,6 +1401,163 @@ local function buildGround(map: Instance)
 	wall(Vector3.new(seaX0, y, seaZ0), Vector3.new(seaX0, y, seaZ1))
 	wall(Vector3.new(seaX1, y, seaZ0), Vector3.new(seaX1, y, seaZ1))
 	flush(ground, map)
+end
+
+-- Beach dressing from the environment kit: foam along the waterline, sand patches breaking up
+-- the grass edge, dunes on the upper beach and the odd starfish near the water. Walks the
+-- shoreline round the grass rectangle (straight along its sides, in arcs round its corners).
+-- Skipped until the meshes are imported. Its own seed, so the rest of the map doesn't shift.
+local function buildBeaches(map: Instance)
+	local foam = envTemplate("ShoreFoam")
+	local patch = envTemplate("SandPatch")
+	local dunes = { envTemplate("SandDuneA"), envTemplate("SandDuneB") }
+	local star = envTemplate("Starfish")
+	if not (foam or patch or dunes[1] or dunes[2] or star) then
+		return
+	end
+	local beach = Instance.new("Folder")
+	beach.Name = "Beach"
+	local brng = Random.new(2203)
+
+	-- points on the grass rectangle's edge with their outward normals, about `step` apart along
+	-- the shoreline, in order round the island
+	local STEP = 44
+	local samples: { { base: Vector3, n: Vector3 } } = {}
+	local function side(from: Vector3, to: Vector3, n: Vector3)
+		local count = math.max(1, math.floor((to - from).Magnitude / STEP))
+		for i = 0, count - 1 do
+			table.insert(samples, { base = from:Lerp(to, i / count), n = n })
+		end
+	end
+	local function corner(at: Vector3, a0: number)
+		local count = math.ceil(380 * math.pi / 2 / STEP)
+		for i = 0, count - 1 do
+			local a = a0 + i / count * math.pi / 2
+			table.insert(samples, { base = at, n = Vector3.new(math.cos(a), 0, math.sin(a)) })
+		end
+	end
+	local nw, ne = Vector3.new(WORLD_X0, 0, WORLD_Z0), Vector3.new(COAST_X, 0, WORLD_Z0)
+	local se, sw = Vector3.new(COAST_X, 0, WORLD_Z1), Vector3.new(WORLD_X0, 0, WORLD_Z1)
+	side(nw, ne, Vector3.new(0, 0, -1))
+	corner(ne, -math.pi / 2)
+	side(ne, se, Vector3.new(1, 0, 0))
+	corner(se, 0)
+	side(se, sw, Vector3.new(0, 0, 1))
+	corner(sw, math.pi / 2)
+	side(sw, nw, Vector3.new(-1, 0, 0))
+	corner(nw, math.pi)
+
+	-- the shoreline's distance out along a sample's normal (coastDistance depends on the point)
+	local function coastAt(sample): number
+		local c = 380
+		for _ = 1, 3 do
+			local q = sample.base + sample.n * c
+			c = coastDistance(q.X, q.Z)
+		end
+		return c
+	end
+	-- no beach at the docks, the river mouth or across a road
+	local function clear(q: Vector3): boolean
+		if q.X > RIVER_X0 - 60 and q.X < RIVER_X1 + 60 then
+			return false
+		end
+		if q.X > COAST_X - 40 and q.Z > DOCKS_Z0 - 80 and q.Z < DOCKS_Z1 + 80 then
+			return false
+		end
+		return not nearRoad(q, 12)
+	end
+	-- smooth terrain doesn't draw exactly at the heights it was written with, so props are put on
+	-- the surface it actually shows
+	local terrainOnly = RaycastParams.new()
+	terrainOnly.FilterType = Enum.RaycastFilterType.Include
+	terrainOnly.FilterDescendantsInstances = { workspace.Terrain }
+	local function surface(q: Vector3, withWater: boolean): RaycastResult?
+		terrainOnly.IgnoreWater = not withWater
+		return workspace:Raycast(Vector3.new(q.X, 40, q.Z), Vector3.new(0, -120, 0), terrainOnly)
+	end
+	local function ground(q: Vector3): number
+		local hit = surface(q, false)
+		return if hit then hit.Position.Y else coastHeight(q.X, q.Z)
+	end
+	-- where the water starts along a sample's normal (at the water's surface), searching round
+	-- the shoreline `c` out
+	local function waterline(sample, c: number): Vector3?
+		for d = math.max(c - 90, 2), c + 40, 2 do
+			local q = sample.base + sample.n * d
+			local hit = surface(q, true)
+			if hit and hit.Material == Enum.Material.Water then
+				local at = sample.base + sample.n * d
+				return Vector3.new(at.X, hit.Position.Y, at.Z)
+			end
+		end
+		return nil
+	end
+	local function scatter(template: Model, q: Vector3, scale: number, sink: number)
+		local model = template:Clone()
+		if math.abs(scale - 1) > 1e-3 then
+			model:ScaleTo(scale)
+		end
+		for _, p in model:GetDescendants() do
+			if p:IsA("BasePart") then
+				p.CastShadow = false
+			end
+		end
+		model:PivotTo(CFrame.new(q.X, ground(q) - sink, q.Z) * CFrame.Angles(0, brng:NextNumber() * math.pi * 2, 0))
+		model.Parent = beach
+	end
+
+	local line: { Vector3? } = {}
+	for i, sample in samples do
+		local c = coastAt(sample)
+		local q = waterline(sample, c)
+		line[i] = if q and clear(q) then q else nil
+		local wet = if q then Vector3.new(q.X - sample.base.X, 0, q.Z - sample.base.Z):Dot(sample.n) else c - 20
+
+		local function along(d: number): Vector3
+			return sample.base + sample.n * math.max(d, 2)
+		end
+		if patch and brng:NextNumber() < 0.6 then
+			local at = along(c - BEACH_WIDTH + brng:NextNumber(-20, 12))
+			if clear(at) then
+				scatter(patch, at, brng:NextNumber(0.9, 1.9), 0.15)
+			end
+		end
+		if brng:NextNumber() < 0.4 then
+			local template = dunes[brng:NextInteger(1, 2)]
+			local at = along(c - BEACH_WIDTH + brng:NextNumber(30, 90))
+			if template and clear(at) then
+				scatter(template, at, brng:NextNumber(0.8, 1.5), 0.6)
+			end
+		end
+		if star and brng:NextNumber() < 0.3 then
+			local at = along(wet - brng:NextNumber(4, 26))
+			if clear(at) then
+				scatter(star, at, brng:NextNumber(1, 1.5), 0.1)
+			end
+		end
+	end
+	-- foam strips from each waterline point to the next, scallops out to sea
+	if foam then
+		for i = 1, #samples do
+			local p0, p1 = line[i], line[i % #samples + 1]
+			if not (p0 and p1) then
+				continue
+			end
+			local span = Vector3.new(p1.X - p0.X, 0, p1.Z - p0.Z)
+			if span.Magnitude < 4 then
+				continue
+			end
+			local tangent = span.Unit
+			-- ShoreFoam's scallops face its local -Z, which is up x tangent
+			if Vector3.yAxis:Cross(tangent):Dot(samples[i].n) < 0 then
+				tangent = -tangent
+			end
+			local mid = (p0 + p1) / 2
+			local cf = CFrame.fromMatrix(mid + Vector3.new(0, 0.05, 0), tangent, Vector3.yAxis)
+			placeTile(beach, foam, cf, (span.Magnitude + 2) / TILE, 1)
+		end
+	end
+	flush(beach, map)
 end
 
 -- Downtown blocks by grid cell ("xi_zi"); anything not listed is a regular downtown block.
@@ -2255,6 +2565,7 @@ function MapBuilder.build()
 	defineRoads()
 	buildGround(map)
 	buildRoads(map)
+	buildBeaches(map)
 	buildDowntown(map)
 	buildIndustrial(map)
 	buildSouthStrip(map)
