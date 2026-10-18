@@ -15,6 +15,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local Config = require(ReplicatedStorage.Shared.Config)
 local Remotes = require(ReplicatedStorage.Shared.Remotes)
+local Sounds = require(ReplicatedStorage.Shared.Sounds)
 local Types = require(ReplicatedStorage.Shared.Types)
 local RoadGraph = require(script.Parent.Parent.Navigation.RoadGraph)
 local Handoff = require(script.Parent.Parent.Jobs.Handoff)
@@ -161,6 +162,27 @@ local function setCargo(player: Player, value: boolean)
 	player:SetAttribute("HasCargo", value)
 end
 
+-- Plays a cargo sound where the crate goes: the player's car boot when it's parked close by,
+-- otherwise the player themselves. Everyone nearby hears it.
+local function cargoSound(player: Player, name: string)
+	local character = player.Character
+	local root = character and character:FindFirstChild("HumanoidRootPart") :: BasePart?
+	if not root then
+		return
+	end
+	local source: BasePart = root
+	for _, car in CollectionService:GetTagged("Vehicle") do
+		local crate = car:FindFirstChild("CargoCrate")
+		if car:GetAttribute("OwnerUserId") == player.UserId and crate and crate:IsA("BasePart") then
+			if (crate.Position - root.Position).Magnitude < 40 then
+				source = crate
+			end
+			break
+		end
+	end
+	Sounds.play(name, source)
+end
+
 local function failJob(player: Player, status: Types.JobStatus)
 	local job = activeJobs[player]
 	if not job then
@@ -219,6 +241,7 @@ local function loadCargo(player: Player, contractId: string): boolean
 	local job = activeJobs[player] :: ActiveJob
 	job.hasCargo = true
 	setCargo(player, true)
+	cargoSound(player, "CargoLoad")
 	Handoff.release(player, Config.Jobs.Contact.LingerSeconds)
 	notify(player, "pickedUp", job.contract)
 	return true
@@ -231,6 +254,7 @@ local function onDropoff(player: Player, part: BasePart)
 	end
 	activeJobs[player] = nil
 	setCargo(player, false)
+	cargoSound(player, "CargoUnload")
 	-- TODO(v0.2): payment types (upfront, on delivery, undisclosed, items, scams) and skimming
 	PlayerDataService.addDirtyCash(player, job.contract.payout)
 	notify(player, "delivered", job.contract)

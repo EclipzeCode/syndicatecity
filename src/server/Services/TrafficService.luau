@@ -30,15 +30,19 @@ local TrafficService = {}
 local civilians: { Civilian } = {}
 local rng = Random.new()
 
-local function spawnCivilian()
-	local nodeId = Driver.spawnNode(rng, nil, TRAFFIC.SpawnRange)
-	local cframe, nextId = Driver.spawnFrame(nodeId, rng)
+-- Adds a car on a free stretch of road out of sight; false when there's no room right now.
+local function spawnCivilian(): boolean
+	local spot = Driver.findSpawn(rng, { near = TRAFFIC.SpawnRange })
+	if not spot then
+		return false
+	end
 	local vehicleType = if rng:NextNumber() < TRAFFIC.VanChance then "Van" else "Sedan"
-	local car = VehicleService.spawn(vehicleType, Palette.CarColors[rng:NextInteger(1, #Palette.CarColors)], cframe)
+	local car = VehicleService.spawn(vehicleType, Palette.CarColors[rng:NextInteger(1, #Palette.CarColors)], spot.cframe)
 	car.Name = `Traffic{vehicleType}`
 	car:SetAttribute("Traffic", true)
 	WorldService.autoHeadlights(car)
-	table.insert(civilians, { car = car, driver = Driver.new(car, nodeId, nextId), shakenUntil = 0 })
+	table.insert(civilians, { car = car, driver = Driver.new(car, spot.from, spot.to), shakenUntil = 0 })
+	return true
 end
 
 local function removeCivilian(civilian: Civilian)
@@ -96,7 +100,9 @@ local function maintain()
 		return
 	end
 	for _ = #civilians + 1, TRAFFIC.Count do
-		spawnCivilian()
+		if not spawnCivilian() then
+			break
+		end
 	end
 end
 

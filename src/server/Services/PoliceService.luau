@@ -106,9 +106,13 @@ local function setState(cop: Cop, state: Suspicion.State)
 	cop.car:SetAttribute("PoliceState", state)
 end
 
-local function spawnCop(nodeId: string, beat: string?): Cop
-	local cframe, nextId = Driver.spawnFrame(nodeId, rng)
-	local car = VehicleService.spawn("Police", Palette.PoliceWhite, cframe)
+-- A new patrol car on a free stretch of road (see Driver.findSpawn), or nil when there's no
+-- room right now; the fleet upkeep tries again a moment later.
+local function spawnCop(spot: Driver.Spawn?, beat: string?): Cop?
+	if not spot then
+		return nil
+	end
+	local car = VehicleService.spawn("Police", Palette.PoliceWhite, spot.cframe)
 	-- headlights on only at night
 	WorldService.autoHeadlights(car)
 	local chassis = car.PrimaryPart :: BasePart
@@ -128,7 +132,7 @@ local function spawnCop(nodeId: string, beat: string?): Cop
 	local cop: Cop = {
 		car = car,
 		chassis = chassis,
-		driver = Driver.new(car, nodeId, nextId),
+		driver = Driver.new(car, spot.from, spot.to),
 		beat = beat,
 		state = "Patrolling",
 		stateSince = os.clock(),
@@ -263,20 +267,13 @@ local function assignPursuers(player: Player)
 	needed -= #free
 	-- call in backup from a road node out of sight
 	while needed > 0 and #cops < POLICE.MaxCops do
-		local candidates, fallback, fallbackDistance = {}, nil, math.huge
-		for _, id in RoadGraph.ids do
-			local d = (nodes[id].position - root.Position).Magnitude
-			if d > 250 and d < 550 then
-				table.insert(candidates, id)
-			elseif d >= 550 and d < fallbackDistance then
-				fallback, fallbackDistance = id, d
-			end
-		end
-		local nodeId = if #candidates > 0 then candidates[rng:NextInteger(1, #candidates)] else fallback
-		if not nodeId then
+		local spot = Driver.findSpawn(rng, { near = NumberRange.new(250, 550), around = root.Position })
+			or Driver.findSpawn(rng, { near = NumberRange.new(550, 1200), around = root.Position })
+		local cop = spawnCop(spot, nil)
+		if not cop then
 			break
 		end
-		startPursuit(spawnCop(nodeId, nil), player)
+		startPursuit(cop, player)
 		needed -= 1
 	end
 end
@@ -715,8 +712,8 @@ local function maintainFleet()
 			removeCop(cop)
 			-- backup cars only come back while their pursuit is on
 			if beat or target then
-				local replacement = spawnCop(Driver.spawnNode(rng, beat), beat)
-				if target and HeatService.isWanted(target) then
+				local replacement = spawnCop(Driver.findSpawn(rng, { district = beat }), beat)
+				if replacement and target and HeatService.isWanted(target) then
 					startPursuit(replacement, target)
 				end
 			end
@@ -730,7 +727,9 @@ local function maintainFleet()
 			end
 		end
 		for _ = have + 1, count do
-			spawnCop(Driver.spawnNode(rng, beat), beat)
+			if not spawnCop(Driver.findSpawn(rng, { district = beat }), beat) then
+				break
+			end
 		end
 	end
 	-- retire backup cars once they're idle and nobody is around to see it
@@ -875,7 +874,7 @@ function PoliceService.init()
 	-- the patrol fleet, spread over each beat
 	for beat, count in POLICE.Beats do
 		for _ = 1, count do
-			spawnCop(Driver.spawnNode(rng, beat), beat)
+			spawnCop(Driver.findSpawn(rng, { district = beat }), beat)
 		end
 	end
 
@@ -903,11 +902,31 @@ function PoliceService.debugRam(player: Player, strength: number): Model?
 	return nil
 end
 
--- Studio test hook: a snapshot of every patrol car's state (see Tools.ServerTests).
-function PoliceService.debugSnapshot(): { { state: string, beat: string?, watch: Player?, target: Player?, suspicion: number, car: Model, blockedFor: number } }
+-- Studio test hook: as if the police had never met `player`: pursuits called off, observations
+-- and investigations dropped, cooldowns forgotten. Lets test runs start from the same state.
+function PoliceService.debugReset(player: Player)
+	releasePursuers(player)
+	forgetPlayer(player)
+	updateAttention()
+end
+
+-- Studio test hook: a snapshot of every patrol car's state (see Tools.ServerTests). `ignoring`
+-- is when the car's cooldown on each player ends (os.clock time).
+function PoliceService.debugSnapshot(): { { state: string, beat: string?, watch: Player?, target: Player?, suspicion: number, car: Model, blockedFor: number, ignoring: { [Player]: number }, disabled: boolean } }
 	local snapshot = {}
+	local now = os.clock()
 	for _, cop in cops do
-		table.insert(snapshot, { state = cop.state, beat = cop.beat, watch = cop.watch, target = cop.target, suspicion = cop.suspicion, car = cop.car, blockedFor = cop.driver.blockedFor })
+		table.insert(snapshot, {
+			state = cop.state,
+			beat = cop.beat,
+			watch = cop.watch,
+			target = cop.target,
+			suspicion = cop.suspicion,
+			car = cop.car,
+			blockedFor = cop.driver.blockedFor,
+			ignoring = table.clone(cop.ignoreUntil),
+			disabled = cop.disabledUntil > now,
+		})
 	end
 	return snapshot
 end

@@ -12,10 +12,12 @@ local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 local TweenService = game:GetService("TweenService")
+local SoundService = game:GetService("SoundService")
 local UserInputService = game:GetService("UserInputService")
 
 local Config = require(ReplicatedStorage.Shared.Config)
 local Remotes = require(ReplicatedStorage.Shared.Remotes)
+local Sounds = require(ReplicatedStorage.Shared.Sounds)
 local Types = require(ReplicatedStorage.Shared.Types)
 local HudController = require(script.Parent.HudController)
 local GpsApp = require(script.Parent.Parent.UI.GpsApp)
@@ -342,9 +344,18 @@ local function unpeek()
 	end
 end
 
+-- the ringer, once per burst of notices
+local RING_GAP = 0.6
+local lastRing = 0
+
 -- A notification card at the top of the phone screen; leaves after `seconds`. `big` shows the
--- title large, for the moments that matter (BUSTED, WANTED, +$1,200).
+-- title large, for the moments that matter (BUSTED, WANTED, +$1,200). The phone rings for it.
 function PhoneController.notify(kind: string, title: string, body: string?, seconds: number?, big: boolean?)
+	local now = os.clock()
+	if now - lastRing > RING_GAP then
+		lastRing = now
+		Sounds.play("PhoneRing", SoundService, if big then 1.2 else 1)
+	end
 	local style = Theme.Notices[kind] or Theme.Notices.info
 	noticeOrder += 1
 	liveNotices += 1

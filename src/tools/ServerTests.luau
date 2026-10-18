@@ -244,43 +244,81 @@ local function snapshotFor(services, player)
 	return nil
 end
 
-local shadowCar
-
--- Keeps the player pinned beside the nearest patrol car (on its right) for `seconds`, with the
--- given apparent velocity, and returns the encounter state seen at the end.
-local function shadowNearestCop(services, player, velocity, seconds, exclude)
-	local root = rootOf(player)
-	root.Anchored = true
-	local vehicles = workspace:FindFirstChild("Vehicles")
-	local target
-	local best = math.huge
-	for _, car in vehicles:GetChildren() do
-		if car:GetAttribute("VehicleType") == "Police" and car.PrimaryPart and car ~= exclude and (exclude == nil or car:GetAttribute("PoliceState") == "Patrolling") and car:GetAttribute("PoliceState") ~= "Pursuing" then
-			local d = (car.PrimaryPart.Position - root.Position).Magnitude
-			if d < best then
-				target, best = car, d
-			end
+-- The patrol observing or investigating the player (not one pursuing them), if any.
+local function watcherOf(services, player)
+	for _, cop in services.PoliceService.debugSnapshot() do
+		if cop.watch == player then
+			return cop
 		end
 	end
-	return shadowCar(player, target, velocity, seconds)
+	return nil
 end
 
-shadowCar = function(player, target, velocity, seconds)
+local function entryFor(services, car)
+	for _, cop in services.PoliceService.debugSnapshot() do
+		if cop.car == car then
+			return cop
+		end
+	end
+	return nil
+end
+
+-- The nearest patrol car that's free to notice the player: on (or heading back to) its beat,
+-- busy with nobody, and not giving this player a breather after an earlier encounter.
+local function nearestFreeCop(services, player)
 	local root = rootOf(player)
-	root.Anchored = true
-	local t = os.clock()
-	while os.clock() - t < seconds do
-		local cf = target.PrimaryPart.CFrame
-		player.Character:PivotTo(CFrame.new(cf.Position + cf.RightVector * 16 + Vector3.new(0, 2, 0)))
-		root.AssemblyLinearVelocity = velocity
-		task.wait(0.05)
+	local now = os.clock()
+	local target
+	local best = math.huge
+	for _, cop in services.PoliceService.debugSnapshot() do
+		local free = (cop.state == "Patrolling" or cop.state == "Returning") and cop.watch == nil and cop.target == nil
+			and not cop.disabled and (cop.ignoring[player] or 0) <= now
+		if free and cop.car.PrimaryPart then
+			local d = (cop.car.PrimaryPart.Position - root.Position).Magnitude
+			if d < best then
+				target, best = cop.car, d
+			end
+		end
 	end
 	return target
 end
 
+-- Keeps the player pinned beside `car` (on its right) with the given apparent velocity until
+-- `done()` is true or `timeout` seconds pass (with no `done`, for the whole time). If a patrol
+-- starts watching the player the player sticks with that one, so the encounter being tested keeps
+-- its line of sight even when a different car noticed first. Returns the car it ended beside.
+-- Polling the police state instead of sleeping a fixed time keeps the tests from racing the
+-- detection loop.
+local function shadow(services, player, car, velocity, timeout, done)
+	local root = rootOf(player)
+	root.Anchored = true
+	local deadline = os.clock() + timeout
+	while true do
+		local watcher = watcherOf(services, player)
+		if watcher and watcher.car.PrimaryPart then
+			car = watcher.car
+		end
+		if (done and done()) or os.clock() >= deadline then
+			return car
+		end
+		local cf = car.PrimaryPart.CFrame
+		player.Character:PivotTo(CFrame.new(cf.Position + cf.RightVector * 16 + Vector3.new(0, 2, 0)))
+		root.AssemblyLinearVelocity = velocity
+		task.wait(0.05)
+	end
+end
+
+local function waitFor(timeout, done)
+	local deadline = os.clock() + timeout
+	while not done() and os.clock() < deadline do
+		task.wait(0.05)
+	end
+end
+
 local function policeTests(services, player)
 	local Heat = services.HeatService
-	local snapshot = services.PoliceService.debugSnapshot()
+	local Police = services.PoliceService
+	local snapshot = Police.debugSnapshot()
 	local beats = {}
 	for _, cop in snapshot do
 		if cop.beat then
@@ -294,44 +332,65 @@ local function policeTests(services, player)
 	end
 	check("patrols exist with no heat", #snapshot >= expected, #snapshot)
 
+	-- start from a clean slate: earlier runs leave cooldowns and encounters behind
 	Heat.clear(player)
 	services.JobService.debugFail(player)
+	Police.debugReset(player)
 
 	-- standing next to a patrol doing nothing wrong
 	local root = rootOf(player)
-	shadowNearestCop(services, player, Vector3.zero, 2)
+	shadow(services, player, nearestFreeCop(services, player), Vector3.zero, 2)
 	check("an innocent player next to a patrol isn't watched", snapshotFor(services, player) == nil)
 	check("and isn't wanted", not Heat.isWanted(player))
 
 	-- speeding right beside a patrol: observed, then tailed, then pursued
-	local speed = Config.Heat.SpeedingThreshold + 30
-	local car = shadowNearestCop(services, player, Vector3.new(speed, 0, 0), 1)
-	local cop = snapshotFor(services, player)
+	local fast = Vector3.new(Config.Heat.SpeedingThreshold + 30, 0, 0)
+	local car = shadow(services, player, nearestFreeCop(services, player), fast, 3, function()
+		return watcherOf(services, player) ~= nil
+	end)
+	local cop = watcherOf(services, player)
 	check("speeding beside a patrol gets noticed", cop ~= nil and (cop.state == "Observing" or cop.state == "Investigating"), cop and cop.state)
+	car = shadow(services, player, car, fast, 3, function()
+		return Heat.getHeat(player) > 0
+	end)
 	check("heat rises while observed", Heat.getHeat(player) > 0, Heat.getHeat(player))
-	shadowNearestCop(services, player, Vector3.new(speed, 0, 0), 9)
-	cop = snapshotFor(services, player)
-	check("keeping it up escalates to a pursuit", cop ~= nil and cop.state == "Pursuing", cop and cop.state)
+	-- suspicion builds at ~17/s, so the pursuit is due in about 6 s
+	shadow(services, player, car, fast, 15, function()
+		local entry = entryFor(services, car)
+		return entry ~= nil and entry.state == "Pursuing"
+	end)
+	cop = entryFor(services, car)
+	check("keeping it up escalates to a pursuit", cop ~= nil and cop.state == "Pursuing" and cop.target == player, cop and cop.state)
 	check("a pursuit makes the player wanted", Heat.isWanted(player))
 	check("the patrol's siren is on", car:GetAttribute("Siren") == true)
 
 	-- the pursuit ends: the patrol goes back to its beat rather than staying on the player
 	root.AssemblyLinearVelocity = Vector3.zero
 	Heat.clear(player)
-	task.wait(0.5)
+	waitFor(2, function()
+		return snapshotFor(services, player) == nil
+	end)
 	cop = snapshotFor(services, player)
 	check("pursuers stand down when the player isn't wanted", cop == nil, cop and cop.state)
 	check("the patrol returns to its route", car:GetAttribute("PoliceState") == "Returning" or car:GetAttribute("PoliceState") == "Patrolling", car:GetAttribute("PoliceState"))
+	local pursuer = entryFor(services, car)
+	check("and leaves the player alone for a while", pursuer ~= nil and (pursuer.ignoring[player] or 0) > os.clock(), pursuer and pursuer.ignoring[player])
 
 	-- slowing down ends an investigation (cars from the last encounter leave this player alone
-	-- for a while, so use one that's just patrolling)
+	-- for a while, so use one that's free)
 	Heat.clear(player)
-	local second = shadowNearestCop(services, player, Vector3.new(speed, 0, 0), 3.2, car)
-	local watcher = snapshotFor(services, player)
-	check("a second patrol starts tailing", watcher ~= nil and watcher.state == "Investigating", watcher and watcher.state)
+	local second = shadow(services, player, nearestFreeCop(services, player), fast, 8, function()
+		local watcher = watcherOf(services, player)
+		return watcher ~= nil and watcher.state == "Investigating"
+	end)
+	local watcher = watcherOf(services, player)
+	check("a second patrol starts tailing", watcher ~= nil and watcher.state == "Investigating" and watcher.car ~= car, watcher and watcher.state)
 	check("the HUD hears about the tail", player:GetAttribute("PoliceAttention") == "tailed", player:GetAttribute("PoliceAttention"))
 	check("tailing isn't a pursuit", not Heat.isWanted(player) and second:GetAttribute("Siren") ~= true)
-	shadowCar(player, second, Vector3.zero, 12)
+	-- suspicion decays at 6/s from the investigate threshold, so the tail ends in about 5 s
+	shadow(services, player, second, Vector3.zero, 15, function()
+		return snapshotFor(services, player) == nil and (player:GetAttribute("PoliceAttention") or "") == ""
+	end)
 	local after = snapshotFor(services, player)
 	check("driving clean ends the investigation", after == nil, after and `{after.state} {after.suspicion}`)
 	check("the HUD tail indicator clears", (player:GetAttribute("PoliceAttention") or "") == "", player:GetAttribute("PoliceAttention"))
@@ -340,6 +399,7 @@ local function policeTests(services, player)
 	root.AssemblyLinearVelocity = Vector3.zero
 	root.Anchored = false
 	Heat.clear(player)
+	Police.debugReset(player)
 end
 
 -- Debug:Invoke("contact"): accept a contract (a downtown one if offered), stand the player in
@@ -372,6 +432,7 @@ local function drivingTests(services, player)
 	local Heat = services.HeatService
 	Heat.clear(player)
 	services.JobService.debugFail(player)
+	services.PoliceService.debugReset(player)
 	local root = rootOf(player)
 	local now = os.clock()
 
@@ -431,6 +492,8 @@ local function drivingTests(services, player)
 	check("a hard ram goes straight to a tail", cop ~= nil and (cop.state == "Investigating" or cop.state == "Pursuing"), cop and `{cop.state} {cop.suspicion}`)
 	check("ramming adds heat", Heat.getHeat(player) > 0, Heat.getHeat(player))
 	Heat.clear(player)
+	-- the rammed car would otherwise still be tailing the player when the next run starts
+	services.PoliceService.debugReset(player)
 end
 
 return function(services, mode: string?)

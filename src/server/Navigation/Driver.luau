@@ -339,42 +339,150 @@ function Driver.ignoring(player: Player): { [Instance]: boolean }
 	return ignore
 end
 
--- A road node out of sight of every player (or any node when there's no such place), in
--- `district` if given and between minDistance and maxDistance of some player if given.
-function Driver.spawnNode(rng: Random, district: string?, near: NumberRange?): string
+-- Where a new car goes: partway along a road between two nodes, in the right-hand lane, facing
+-- along it. Cars start out of sight and away from junctions, with room around them, so they
+-- don't spawn into each other.
+export type Spawn = { cframe: CFrame, from: string, to: string }
+
+export type SpawnOptions = {
+	-- only roads starting in this district
+	district: string?,
+	-- distance band from `around` (or from the nearest player when `around` is nil)
+	near: NumberRange?,
+	around: Vector3?,
+}
+
+-- out of sight of every player
+local HIDDEN_DISTANCE = 250
+-- no other car closer than this, in any direction
+local SPAWN_CLEARANCE = 45
+-- and none in the same lane this far ahead or behind (a car coming up behind would rear-end
+-- the new one while it gets going; one just ahead would be hit right away)
+local SPAWN_LANE_GAP = 90
+-- start at least this far from either node, so cars don't appear in the middle of a junction
+local SPAWN_NODE_MARGIN = 30
+-- the chassis sits this far above the road surface when it appears
+local SPAWN_HEIGHT = 4
+
+local spawnRayParams = RaycastParams.new()
+spawnRayParams.FilterType = Enum.RaycastFilterType.Exclude
+spawnRayParams.RespectCanCollide = true
+
+local function playerPositions(): { Vector3 }
+	local positions = {}
+	for _, player in Players:GetPlayers() do
+		local character = player.Character
+		local root = character and character:FindFirstChild("HumanoidRootPart")
+		if root and root:IsA("BasePart") then
+			table.insert(positions, root.Position)
+		end
+	end
+	return positions
+end
+
+local function nearestOf(positions: { Vector3 }, point: Vector3): number
+	local nearest = math.huge
+	for _, position in positions do
+		nearest = math.min(nearest, (position - point).Magnitude)
+	end
+	return nearest
+end
+
+-- Whether a car facing `cframe` has room: nothing close by, and nothing in its lane just ahead
+-- or behind.
+function Driver.spawnClear(cframe: CFrame): boolean
+	for _, instance in CollectionService:GetTagged("Vehicle") do
+		local chassis = (instance :: Model).PrimaryPart
+		if not chassis or not instance:IsDescendantOf(workspace) then
+			continue
+		end
+		local rel = cframe:PointToObjectSpace(chassis.Position)
+		if rel.Magnitude < SPAWN_CLEARANCE then
+			return false
+		end
+		if math.abs(rel.X) < DRIVING.LaneHalfWidth + 4 and math.abs(rel.Z) < SPAWN_LANE_GAP and math.abs(rel.Y) < 20 then
+			return false
+		end
+	end
+	return true
+end
+
+-- The road surface under a lane point, or nil when there's no road there (a lane off the edge
+-- of a narrow road, a gap in the map).
+local function roadHeight(point: Vector3): number?
+	spawnRayParams.FilterDescendantsInstances = CollectionService:GetTagged("Vehicle")
+	local result = workspace:Raycast(point + Vector3.new(0, 40, 0), Vector3.new(0, -80, 0), spawnRayParams)
+	if result and result.Instance:GetAttribute("Surface") ~= nil then
+		return result.Position.Y
+	end
+	return nil
+end
+
+-- A spot for a new car (see Spawn), or nil when there's no free one right now; callers try again
+-- later. Prefers roads out of sight; falls back to any road with room.
+function Driver.findSpawn(rng: Random, options: SpawnOptions?): Spawn?
+	local opts = options or {}
 	local nodes = RoadGraph.nodes
-	local pool, fallback = {}, {}
+	local players = playerPositions()
+	-- every road (both directions) leaving a node in the district, long enough to start on
+	local segments: { { from: string, to: string } } = {}
 	for _, id in RoadGraph.ids do
 		local node = nodes[id]
-		if district == nil or node.district == district then
-			table.insert(fallback, id)
-			local nearest = math.huge
-			for _, player in Players:GetPlayers() do
-				local character = player.Character
-				local root = character and character:FindFirstChild("HumanoidRootPart")
-				if root and root:IsA("BasePart") then
-					nearest = math.min(nearest, (root.Position - node.position).Magnitude)
+		if opts.district == nil or node.district == opts.district then
+			for _, other in node.links do
+				if (nodes[other].position - node.position).Magnitude >= SPAWN_NODE_MARGIN * 2 + 10 then
+					table.insert(segments, { from = id, to = other })
 				end
-			end
-			local hidden = nearest >= 250
-			local inBand = near == nil or nearest == math.huge or (nearest >= near.Min and nearest <= near.Max)
-			if hidden and inBand then
-				table.insert(pool, id)
 			end
 		end
 	end
-	local choices = if #pool > 0 then pool elseif #fallback > 0 then fallback else RoadGraph.ids
-	return choices[rng:NextInteger(1, #choices)]
-end
+	if #segments == 0 then
+		return nil
+	end
 
--- The spawn CFrame for a car starting at `nodeId` toward one of its neighbours, in its lane.
-function Driver.spawnFrame(nodeId: string, rng: Random): (CFrame, string)
-	local node = RoadGraph.nodes[nodeId]
-	local nextId = node.links[rng:NextInteger(1, #node.links)]
-	local nextPos = RoadGraph.nodes[nextId].position
-	local start = Driver.laneTarget(nextPos, node.position)
-	local cframe = CFrame.lookAt(start + Vector3.new(0, 4, 0), Driver.laneTarget(node.position, nextPos) + Vector3.new(0, 4, 0))
-	return cframe, nextId
+	local function attempt(strict: boolean): Spawn?
+		for _ = 1, 40 do
+			local segment = segments[rng:NextInteger(1, #segments)]
+			local a, b = nodes[segment.from].position, nodes[segment.to].position
+			local length = (b - a).Magnitude
+			local along = rng:NextNumber(SPAWN_NODE_MARGIN, length - SPAWN_NODE_MARGIN)
+			local direction = (b - a).Unit
+			local flat = Vector3.new(direction.X, 0, direction.Z)
+			if flat.Magnitude < 0.1 then
+				continue
+			end
+			local right = flat.Unit:Cross(Vector3.yAxis)
+			local point = a + direction * along + right * LANE_OFFSET
+			if strict then
+				local nearest = nearestOf(players, point)
+				if nearest < HIDDEN_DISTANCE then
+					continue
+				end
+				local band = opts.near
+				if band then
+					local distance = if opts.around then (opts.around - point).Magnitude else nearest
+					if distance ~= math.huge and (distance < band.Min or distance > band.Max) then
+						continue
+					end
+				end
+			elseif nearestOf(players, point) < 60 then
+				-- never right on top of someone, even as a last resort
+				continue
+			end
+			local ground = roadHeight(point)
+			if not ground then
+				continue
+			end
+			local position = Vector3.new(point.X, ground + SPAWN_HEIGHT, point.Z)
+			-- face along the road, level with its slope
+			local cframe = CFrame.lookAt(position, position + direction)
+			if Driver.spawnClear(cframe) then
+				return { cframe = cframe, from = segment.from, to = segment.to }
+			end
+		end
+		return nil
+	end
+	return attempt(true) or attempt(false)
 end
 
 return Driver
