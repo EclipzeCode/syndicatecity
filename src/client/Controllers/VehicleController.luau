@@ -1,20 +1,96 @@
 --!strict
--- Simulates the car the local player is driving. The server hands the driver network ownership,
--- so impulses applied here move the car for everyone.
+-- Simulates the car the local player is driving (the server hands the driver network ownership,
+-- so impulses applied here move the car for everyone) and owns the in-car controls:
+--   Space  handbrake (driver)      L  headlights (driver)      F  get out (any seat)
+-- Those keys are only bound while seated, so on foot F still triggers the Drive prompt and
+-- Space still jumps.
 
 local CollectionService = game:GetService("CollectionService")
+local ContextActionService = game:GetService("ContextActionService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 
 local Config = require(ReplicatedStorage.Shared.Config)
+local Remotes = require(ReplicatedStorage.Shared.Remotes)
 local VehiclePhysics = require(ReplicatedStorage.Shared.VehiclePhysics)
 
 local player = Players.LocalPlayer
+local toggleHeadlights = Remotes.event("ToggleHeadlights")
 
 local VehicleController = {}
 
+-- driver seat, when the local player is driving
 local currentSeat: VehicleSeat? = nil
+-- any seat in a car (driver or passenger)
+local carSeat: BasePart? = nil
+local handbrakeHeld = false
+
+-- above the default jump binding, so Space brakes instead of bailing out of the car
+local PRIORITY = Enum.ContextActionPriority.High.Value
+
+export type State = {
+	car: Model,
+	seat: BasePart,
+	isDriver: boolean,
+	handbrake: boolean,
+}
+
+-- What the local player is sitting in, for the car HUD; nil on foot.
+function VehicleController.getState(): State?
+	local seat = carSeat
+	if not seat or not seat.Parent then
+		return nil
+	end
+	return {
+		car = seat.Parent :: Model,
+		seat = seat,
+		isDriver = currentSeat ~= nil,
+		handbrake = handbrakeHeld,
+	}
+end
+
+local function sink(_: string, _: Enum.UserInputState, _: InputObject): Enum.ContextActionResult
+	return Enum.ContextActionResult.Sink
+end
+
+local function bindCarControls(isDriver: boolean)
+	ContextActionService:BindActionAtPriority("CarExit", function(_, state)
+		if state == Enum.UserInputState.Begin then
+			local humanoid = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
+			if humanoid then
+				humanoid.Sit = false
+			end
+		end
+		return Enum.ContextActionResult.Sink
+	end, false, PRIORITY, Enum.KeyCode.F, Enum.KeyCode.ButtonY)
+	if isDriver then
+		ContextActionService:BindActionAtPriority("CarHandbrake", function(_, state)
+			if state == Enum.UserInputState.Begin then
+				handbrakeHeld = true
+			elseif state == Enum.UserInputState.End or state == Enum.UserInputState.Cancel then
+				handbrakeHeld = false
+			end
+			return Enum.ContextActionResult.Sink
+		end, false, PRIORITY, Enum.KeyCode.Space, Enum.KeyCode.ButtonX)
+		ContextActionService:BindActionAtPriority("CarHeadlights", function(_, state)
+			if state == Enum.UserInputState.Begin then
+				toggleHeadlights:FireServer()
+			end
+			return Enum.ContextActionResult.Sink
+		end, false, PRIORITY, Enum.KeyCode.L, Enum.KeyCode.DPadUp)
+	else
+		-- passengers can't drive, but Space still shouldn't throw them out of the car
+		ContextActionService:BindActionAtPriority("CarHandbrake", sink, false, PRIORITY, Enum.KeyCode.Space)
+	end
+end
+
+local function unbindCarControls()
+	for _, name in { "CarExit", "CarHandbrake", "CarHeadlights" } do
+		ContextActionService:UnbindAction(name)
+	end
+	handbrakeHeld = false
+end
 
 -- The car's chassis if the local player is in its driver seat.
 function VehicleController.getDrivenCar(): (Model?, BasePart?)
@@ -85,6 +161,8 @@ local function onCharacter(character: Model)
 			local seat = lastSeat
 			lastSeat = nil
 			currentSeat = nil
+			carSeat = nil
+			unbindCarControls()
 			-- a car that was impounded or despawned under the player is already gone
 			if seat and seat.Parent then
 				stepOut(character, humanoid, seat)
@@ -92,15 +170,18 @@ local function onCharacter(character: Model)
 			return
 		end
 		lastSeat = seatPart
-		if seatPart and seatPart:IsA("VehicleSeat") then
-			local car = seatPart.Parent
-			if car and CollectionService:HasTag(car, "Vehicle") then
-				currentSeat = seatPart
-				return
-			end
-		end
 		currentSeat = nil
+		carSeat = nil
+		local car = seatPart and seatPart.Parent
+		if seatPart and car and CollectionService:HasTag(car, "Vehicle") then
+			carSeat = seatPart
+			if seatPart:IsA("VehicleSeat") then
+				currentSeat = seatPart
+			end
+			bindCarControls(currentSeat ~= nil)
+		end
 	end)
+	humanoid.Died:Connect(unbindCarControls)
 end
 
 function VehicleController.init()
@@ -117,7 +198,11 @@ function VehicleController.init()
 		end
 		local tuning = Config.Vehicles.Types[car:GetAttribute("VehicleType") :: string]
 		if tuning then
-			VehiclePhysics.step(car, chassis, tuning, { throttle = seat.ThrottleFloat, steer = seat.SteerFloat }, dt)
+			VehiclePhysics.step(car, chassis, tuning, {
+				throttle = seat.ThrottleFloat,
+				steer = seat.SteerFloat,
+				handbrake = handbrakeHeld,
+			}, dt)
 		end
 	end)
 end

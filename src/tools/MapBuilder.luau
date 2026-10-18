@@ -260,7 +260,13 @@ local function buildRoads(map: Instance)
 	end
 	flush(roads, map)
 
-	-- the graph police AI drives on
+	-- the graph police AI drives on and the phone GPS routes on; LinkKinds lists each link's road
+	-- kind ("street", "highway", "dirt") in the same order as Links
+	local kindOf: { [string]: string } = {}
+	for _, edge in edges do
+		kindOf[`{edge.a}|{edge.b}`] = edge.kind
+		kindOf[`{edge.b}|{edge.a}`] = edge.kind
+	end
 	local graph = Instance.new("Folder")
 	graph.Name = "RoadGraph"
 	for _, n in nodes do
@@ -268,6 +274,11 @@ local function buildRoads(map: Instance)
 		value.Name = n.id
 		value.Value = n.position
 		value:SetAttribute("Links", table.concat(n.links, ","))
+		local kinds = {}
+		for _, other in n.links do
+			table.insert(kinds, kindOf[`{n.id}|{other}`] or "street")
+		end
+		value:SetAttribute("LinkKinds", table.concat(kinds, ","))
 		value.Parent = graph
 	end
 	graph.Parent = map

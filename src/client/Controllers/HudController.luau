@@ -1,9 +1,9 @@
 --!strict
--- On-screen HUD: dirty cash, heat, wanted/bust state, objective, waypoint marker, speedometer,
--- ammo, big center banners and toast notifications. Reads Player attributes set by the server
--- (DirtyCash, Heat, Wanted, BustProgress, Reloading) and the equipped pistol's Ammo attribute.
+-- On-screen HUD: dirty cash, heat, wanted/bust state, objective, ammo, big center banners and
+-- toast notifications. Reads Player attributes set by the server (DirtyCash, Heat, Wanted,
+-- BustProgress, Reloading) and the equipped pistol's Ammo attribute. Driving info lives in
+-- CarHudController and navigation in the phone's GPS app; nothing marks the world on screen.
 
-local CollectionService = game:GetService("CollectionService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
@@ -27,9 +27,6 @@ local bannerBackdrop: Frame
 local bannerVersion = 0
 local toastStack: Frame
 local toastOrder = 0
-local waypoint: BillboardGui
-local waypointName: TextLabel
-local waypointDistance: TextLabel
 
 -- Toast kinds: accent color and the glyph in the icon chip.
 local TOASTS: { [string]: { color: Color3, icon: string } } = {
@@ -144,7 +141,7 @@ function HudController.toast(kind: string, title: string, body: string?, seconds
 end
 
 ---------------------------------------------------------------------------------------------------
--- Objective, banner, waypoint
+-- Objective, banner
 ---------------------------------------------------------------------------------------------------
 
 -- `kind` colors the dot: "pickup", "dropoff", or nothing for neutral.
@@ -187,78 +184,6 @@ local function onNotice(kind: string, text: string)
 	end
 end
 
--- Marks the pickup/dropoff part with the given name, or clears the marker.
-function HudController.setWaypoint(pointName: string?, isPickup: boolean?)
-	waypoint.Adornee = nil
-	waypoint.Enabled = false
-	if not pointName then
-		return
-	end
-	local tag = if isPickup then Config.Tags.Pickup else Config.Tags.Dropoff
-	for _, part in CollectionService:GetTagged(tag) do
-		if part.Name == pointName and part:IsA("BasePart") then
-			waypoint.Adornee = part
-			waypoint.Enabled = true
-			waypointName.Text = pointName
-			waypointName.TextColor3 = if isPickup then C.Pickup else C.Dropoff
-			return
-		end
-	end
-end
-
-local function buildWaypoint(gui: ScreenGui)
-	waypoint = Theme.new("BillboardGui", {
-		Name = "Waypoint",
-		AlwaysOnTop = true,
-		Size = UDim2.fromOffset(220, 64),
-		StudsOffset = Vector3.new(0, 10, 0),
-		LightInfluence = 0,
-		Enabled = false,
-		Parent = gui,
-	})
-	local pill = Theme.panel({
-		AutomaticSize = Enum.AutomaticSize.X,
-		Size = UDim2.fromOffset(0, 32),
-		AnchorPoint = Vector2.new(0.5, 0),
-		Position = UDim2.fromScale(0.5, 0),
-		Parent = waypoint,
-	})
-	Theme.padding(12, 0).Parent = pill
-	Theme.new("UIListLayout", {
-		FillDirection = Enum.FillDirection.Horizontal,
-		VerticalAlignment = Enum.VerticalAlignment.Center,
-		Padding = UDim.new(0, 8),
-		Parent = pill,
-	})
-	waypointName = Theme.label({
-		Font = F.Bold,
-		TextSize = 15,
-		AutomaticSize = Enum.AutomaticSize.X,
-		Size = UDim2.fromOffset(0, 32),
-		LayoutOrder = 1,
-		Parent = pill,
-	})
-	waypointDistance = Theme.label({
-		Font = F.Mono,
-		TextSize = 14,
-		TextColor3 = C.TextDim,
-		AutomaticSize = Enum.AutomaticSize.X,
-		Size = UDim2.fromOffset(0, 32),
-		LayoutOrder = 2,
-		Parent = pill,
-	})
-	Theme.label({
-		Text = "▼",
-		Font = F.Heavy,
-		TextSize = 20,
-		TextXAlignment = Enum.TextXAlignment.Center,
-		TextStrokeTransparency = 0.5,
-		Size = UDim2.new(1, 0, 0, 24),
-		Position = UDim2.fromOffset(0, 36),
-		Parent = waypoint,
-	})
-end
-
 ---------------------------------------------------------------------------------------------------
 -- Build
 ---------------------------------------------------------------------------------------------------
@@ -267,6 +192,7 @@ function HudController.init()
 	local gui = Theme.new("ScreenGui", {
 		Name = "Hud",
 		ResetOnSpawn = false,
+		ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
 		IgnoreGuiInset = false,
 		Parent = player:WaitForChild("PlayerGui"),
 	})
@@ -373,19 +299,6 @@ function HudController.init()
 	})
 	Theme.new("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 8), Parent = toastStack })
 
-	-- speedometer, bottom centre
-	local speedo = Theme.panel({
-		Name = "Speedometer",
-		Size = UDim2.fromOffset(170, 70),
-		AnchorPoint = Vector2.new(0.5, 1),
-		Position = UDim2.new(0.5, 0, 1, -16),
-		Visible = false,
-		Parent = gui,
-	})
-	local speedValue = Theme.label({ Font = F.Heavy, TextSize = 34, TextXAlignment = Enum.TextXAlignment.Right, Size = UDim2.new(0, 92, 0, 40), Position = UDim2.fromOffset(8, 6), Parent = speedo })
-	local speedUnit = Theme.caption("mph", { Size = UDim2.new(0, 60, 0, 14), Position = UDim2.fromOffset(106, 26), Parent = speedo })
-	local _, speedFill = Theme.bar({ Size = UDim2.new(1, -28, 0, 6), Position = UDim2.fromOffset(14, 52), Parent = speedo }, C.Text)
-
 	-- ammo, bottom right above the phone button
 	local ammo = Theme.panel({
 		Name = "Ammo",
@@ -397,8 +310,6 @@ function HudController.init()
 	})
 	Theme.caption("Pistol", { Size = UDim2.new(1, -24, 0, 14), Position = UDim2.fromOffset(12, 8), Parent = ammo })
 	local ammoValue = Theme.label({ Font = F.Mono, TextSize = 18, Size = UDim2.new(1, -24, 0, 22), Position = UDim2.fromOffset(12, 22), Parent = ammo })
-
-	buildWaypoint(gui)
 
 	local function refresh()
 		local cash = (player:GetAttribute("DirtyCash") :: number?) or 0
@@ -422,26 +333,8 @@ function HudController.init()
 	end
 	refresh()
 
-	local limit = Config.Heat.SpeedingThreshold
 	RunService.RenderStepped:Connect(function()
 		local character = player.Character
-		local humanoid = character and character:FindFirstChildOfClass("Humanoid")
-		local seat = humanoid and humanoid.SeatPart
-		if seat then
-			local speed = seat.AssemblyLinearVelocity.Magnitude
-			local speeding = speed > limit
-			speedo.Visible = true
-			speedValue.Text = tostring(math.floor(speed * Config.Vehicles.MphPerStud + 0.5))
-			speedValue.TextColor3 = if speeding then C.Wanted else C.Text
-			speedUnit.Text = if speeding then "MPH · SPEEDING" else "MPH"
-			speedUnit.TextColor3 = if speeding then C.Wanted else C.TextDim
-			-- the bar fills up to the speed limit, so a full bar means "careful"
-			speedFill.Size = UDim2.fromScale(math.clamp(speed / limit, 0, 1), 1)
-			speedFill.BackgroundColor3 = if speeding then C.Wanted else C.Text
-		else
-			speedo.Visible = false
-		end
-
 		local tool = character and character:FindFirstChild("Pistol")
 		if tool then
 			ammo.Visible = true
@@ -450,12 +343,6 @@ function HudController.init()
 				else `{tool:GetAttribute("Ammo") or 0} / {tool:GetAttribute("MagazineSize") or 0}`
 		else
 			ammo.Visible = false
-		end
-
-		local target = waypoint.Adornee :: BasePart?
-		local root = character and character:FindFirstChild("HumanoidRootPart") :: BasePart?
-		if target and root then
-			waypointDistance.Text = Theme.distance((target.Position - root.Position).Magnitude)
 		end
 	end)
 

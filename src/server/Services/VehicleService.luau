@@ -10,6 +10,7 @@ local RunService = game:GetService("RunService")
 
 local Config = require(ReplicatedStorage.Shared.Config)
 local Palette = require(ReplicatedStorage.Shared.Palette)
+local Remotes = require(ReplicatedStorage.Shared.Remotes)
 local VehiclePhysics = require(ReplicatedStorage.Shared.VehiclePhysics)
 local CarFactory = require(script.Parent.Parent.Vehicles.CarFactory)
 
@@ -222,8 +223,28 @@ local function simulate(dt: number)
 	end
 end
 
+local lastHeadlightToggle: { [Player]: number } = {}
+
+-- Only the driver can switch their car's headlights.
+local function onToggleHeadlights(player: Player)
+	local now = os.clock()
+	if lastHeadlightToggle[player] and now - lastHeadlightToggle[player] < 0.25 then
+		return
+	end
+	local car = VehicleService.getOccupiedCar(player)
+	if not car or VehicleService.getDriver(car) ~= player then
+		return
+	end
+	lastHeadlightToggle[player] = now
+	CarFactory.setHeadlights(car, car:GetAttribute("Headlights") ~= true)
+end
+
 function VehicleService.init()
 	setupCollisionGroups()
+	Remotes.event("ToggleHeadlights").OnServerEvent:Connect(onToggleHeadlights)
+	Players.PlayerRemoving:Connect(function(player)
+		lastHeadlightToggle[player] = nil
+	end)
 
 	carsFolder = Instance.new("Folder")
 	carsFolder.Name = "Vehicles"

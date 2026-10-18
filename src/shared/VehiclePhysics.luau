@@ -15,7 +15,15 @@ export type Input = {
 	throttle: number, -- -1..1
 	steer: number, -- -1 (left) .. 1 (right)
 	parked: boolean?, -- strong brake when nobody is driving
+	handbrake: boolean?, -- strong brake while held (Space)
 }
+
+-- Coasting slows the car like engine braking plus drag, studs/s² (constant + per stud/s), so a
+-- car you stop driving comes to rest in a few seconds instead of sliding forever.
+local COAST_DECEL = 6
+local COAST_DRAG = 0.25
+-- Below this speed with no throttle the car holds still, like a car in gear with the brake on.
+local HOLD_SPEED = 1.5
 
 local paramsByCar: { [Model]: RaycastParams } = setmetatable({}, { __mode = "k" }) :: any
 
@@ -79,9 +87,16 @@ function VehiclePhysics.step(car: Model, chassis: BasePart, tuning: Tuning, inpu
 		local forwardSpeed = velocity:Dot(forward)
 		local throttle = math.clamp(input.throttle, -1, 1)
 
+		-- slow toward 0 at `rate` without overshooting, so braking ends at exactly 0
+		local function brakeToStop(rate: number): number
+			return -math.sign(forwardSpeed) * math.min(math.abs(forwardSpeed) / dt, rate)
+		end
+
+		local holding = false
 		local accel = 0
-		if input.parked then
-			accel = -forwardSpeed * 6
+		if input.parked or input.handbrake then
+			accel = brakeToStop(tuning.Brake * 1.2)
+			holding = math.abs(forwardSpeed) < HOLD_SPEED
 		elseif throttle > 0 then
 			if forwardSpeed < -2 then
 				accel = tuning.Brake * throttle
@@ -96,13 +111,15 @@ function VehiclePhysics.step(car: Model, chassis: BasePart, tuning: Tuning, inpu
 				accel = tuning.Acceleration * 0.6 * throttle
 			end
 		else
-			accel = -forwardSpeed * 0.5
+			accel = brakeToStop(COAST_DECEL + COAST_DRAG * math.abs(forwardSpeed))
+			holding = math.abs(forwardSpeed) < HOLD_SPEED
 		end
 		chassis:ApplyImpulse(forward * accel * mass * dt)
 
-		-- tires resist sliding sideways
+		-- tires resist sliding sideways; a held car doesn't creep sideways either
 		local sideways = velocity:Dot(right)
-		chassis:ApplyImpulse(-right * sideways * math.min(1, tuning.Grip * dt) * mass)
+		local grip = if holding then 1 else math.min(1, tuning.Grip * dt)
+		chassis:ApplyImpulse(-right * sideways * grip * mass)
 
 		-- steering sets the yaw rate directly for a responsive arcade feel
 		local speedFactor = math.clamp(math.abs(forwardSpeed) / 20, 0, 1)

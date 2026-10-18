@@ -16,6 +16,7 @@ local EVENTS = {
 	"FireWeapon", -- client -> server: (target: Vector3)
 	"ReloadWeapon", -- client -> server: ()
 	"ShotFired", -- server -> all clients: (origin: Vector3, hit: Vector3, hitCharacter: boolean)
+	"ToggleHeadlights", -- client -> server: () driver flips their car's headlights
 }
 
 local folder: Instance

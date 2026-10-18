@@ -1,7 +1,9 @@
 --!strict
--- The burner phone: a Contracts app that lists jobs from the server and lets the player accept one,
--- and shows the job in progress. Open with the Phone button or the P key. Contract updates arrive
--- as HUD toasts and set the objective and waypoint.
+-- The burner phone, with two apps: Contracts (jobs from the server, accept one, the job in
+-- progress) and GPS (UI.GpsApp: map, route and directions to the job's pickup or dropoff, speed
+-- limit). Open with the Phone button or P; getting into a car opens the GPS. Contract updates
+-- arrive as HUD toasts and set the objective and the GPS destination. The phone is the only
+-- navigation: nothing marks destinations in the world.
 
 local CollectionService = game:GetService("CollectionService")
 local Lighting = game:GetService("Lighting")
@@ -15,6 +17,7 @@ local Config = require(ReplicatedStorage.Shared.Config)
 local Remotes = require(ReplicatedStorage.Shared.Remotes)
 local Types = require(ReplicatedStorage.Shared.Types)
 local HudController = require(script.Parent.HudController)
+local GpsApp = require(script.Parent.Parent.UI.GpsApp)
 local Theme = require(script.Parent.Parent.UI.Theme)
 
 local player = Players.LocalPlayer
@@ -152,7 +155,13 @@ local function contractCard(contract: Types.Contract, index: number)
 		accept.Text = "Accepting…"
 		local ok, err = acceptContract:InvokeServer(contract.id)
 		if ok then
-			PhoneController.close()
+			-- in a car, go straight to directions; on foot, put the phone away
+			local humanoid = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
+			if humanoid and humanoid.SeatPart then
+				PhoneController.showApp("gps")
+			else
+				PhoneController.close()
+			end
 		else
 			-- usually the board moved on: show the fresh list, then say why
 			reload()
@@ -207,20 +216,48 @@ reload = function()
 end
 
 ---------------------------------------------------------------------------------------------------
--- Open / close
+-- Apps, open / close
 ---------------------------------------------------------------------------------------------------
 
-function PhoneController.open()
+local pages: { [string]: Frame } = {}
+local tabs: { [string]: TextButton } = {}
+local currentApp = "contracts"
+-- set when getting into a car opened the GPS, so getting out can put the phone away again
+local autoOpened = false
+
+function PhoneController.showApp(name: string)
+	currentApp = name
+	for appName, page in pages do
+		page.Visible = appName == name
+	end
+	for appName, tab in tabs do
+		local active = appName == name
+		tab.BackgroundColor3 = if active then C.PanelRaised else C.Panel
+		tab.TextColor3 = if active then C.Text else C.TextDim
+	end
+	if name == "contracts" and isOpen then
+		task.spawn(reload)
+	end
+end
+
+-- Opens the phone, on `app` if given ("contracts" or "gps").
+function PhoneController.open(app: string?)
+	if app then
+		PhoneController.showApp(app)
+	end
 	if isOpen then
 		return
 	end
 	isOpen = true
 	phone.Visible = true
 	TweenService:Create(phone, TweenInfo.new(0.35, Enum.EasingStyle.Quint), { Position = OPEN_POSITION }):Play()
-	task.spawn(reload)
+	if currentApp == "contracts" then
+		task.spawn(reload)
+	end
 end
 
 function PhoneController.close()
+	autoOpened = false
 	if not isOpen then
 		return
 	end
@@ -253,17 +290,17 @@ local function onContractUpdated(status: Types.JobStatus, contract: Types.Contra
 	if status == "accepted" then
 		activeContract, activeStage = contract, "accepted"
 		HudController.setObjective(`Pick up the cargo at {contract.pickupName}`, "pickup")
-		HudController.setWaypoint(contract.pickupName, true)
+		GpsApp.setDestination(pointPosition(contract.pickupName, Config.Tags.Pickup), contract.pickupName, C.Pickup)
 		HudController.toast("pickup", "Contract accepted", `{contract.syndicate} · pick up at {contract.pickupName}`)
 	elseif status == "pickedUp" then
 		activeStage = "pickedUp"
 		HudController.setObjective(`Deliver to {contract.dropoffName}. Keep a low profile.`, "dropoff")
-		HudController.setWaypoint(contract.dropoffName, false)
-		HudController.toast("dropoff", "Cargo loaded", `Deliver to {contract.dropoffName}`)
+		GpsApp.setDestination(pointPosition(contract.dropoffName, Config.Tags.Dropoff), contract.dropoffName, C.Dropoff)
+		HudController.toast("dropoff", "Cargo loaded", `Deliver to {contract.dropoffName} · route on your GPS`)
 	else
 		activeContract, activeStage = nil, nil
 		HudController.setObjective("")
-		HudController.setWaypoint(nil)
+		GpsApp.setDestination(nil)
 		if status == "delivered" then
 			HudController.showBanner(`+{Theme.money(contract.payout)}`, C.Cash)
 			HudController.toast("cash", "Delivered", `{contract.syndicate} paid {Theme.money(contract.payout)}`, 5)
@@ -273,9 +310,29 @@ local function onContractUpdated(status: Types.JobStatus, contract: Types.Contra
 			HudController.toast("police", "Cargo confiscated", "The police took the shipment.", 5)
 		end
 	end
-	if isOpen then
+	if isOpen and currentApp == "contracts" then
 		task.spawn(reload)
 	end
+end
+
+-- Getting into a car opens the GPS; getting out puts the phone away if the car opened it.
+local function onCharacter(character: Model)
+	local humanoid = character:WaitForChild("Humanoid") :: Humanoid
+	humanoid.Seated:Connect(function(active, seat)
+		if active then
+			local car = seat and seat.Parent
+			if car and CollectionService:HasTag(car, "Vehicle") then
+				local wasShowingGps = isOpen and currentApp == "gps"
+				PhoneController.open("gps")
+				autoOpened = not wasShowingGps
+			end
+		elseif autoOpened then
+			if isOpen and currentApp == "gps" then
+				PhoneController.close()
+			end
+			autoOpened = false
+		end
+	end)
 end
 
 ---------------------------------------------------------------------------------------------------
@@ -308,10 +365,65 @@ local function buildStatusBar(screen: Frame)
 	}, { Theme.corner(10) })
 end
 
+-- The Contracts app: header, the job in progress, and the list of offers.
+local function buildContracts(page: Frame)
+	local header = Theme.new("Frame", { BackgroundTransparency = 1, Size = UDim2.new(1, -28, 0, 48), Position = UDim2.fromOffset(14, 4), Parent = page })
+	Theme.label({ Text = "Contracts", Font = F.Heavy, TextSize = 24, Size = UDim2.new(1, -80, 0, 28), Parent = header })
+	statusLabel = Theme.caption("", { Size = UDim2.new(1, -80, 0, 16), Position = UDim2.fromOffset(0, 30), Parent = header })
+	-- Gotham has no refresh arrow glyph, so the button says what it does
+	local refresh = Theme.button({
+		Text = "Refresh",
+		TextSize = 12,
+		Size = UDim2.fromOffset(68, 28),
+		AnchorPoint = Vector2.new(1, 0),
+		Position = UDim2.new(1, 0, 0, 0),
+		Parent = header,
+	})
+	refresh.Activated:Connect(function()
+		task.spawn(reload)
+	end)
+
+	activeCard = Theme.new("Frame", {
+		Name = "ActiveJob",
+		Visible = false,
+		BackgroundColor3 = C.PanelRaised,
+		BorderSizePixel = 0,
+		Size = UDim2.new(1, -28, 0, 62),
+		Position = UDim2.fromOffset(14, 60),
+		Parent = page,
+	}, { Theme.corner(12), Theme.stroke(0.6, C.Pickup), Theme.padding(12, 10) })
+	Theme.caption("Current job", { Size = UDim2.new(1, 0, 0, 12), Parent = activeCard })
+	activeTitle = Theme.label({ Font = F.Bold, TextSize = 15, TextTruncate = Enum.TextTruncate.AtEnd, Size = UDim2.new(1, 0, 0, 18), Position = UDim2.fromOffset(0, 14), Parent = activeCard })
+	activeBody = Theme.label({ TextSize = 12, TextColor3 = C.TextDim, TextTruncate = Enum.TextTruncate.AtEnd, Size = UDim2.new(1, 0, 0, 14), Position = UDim2.fromOffset(0, 32), Parent = activeCard })
+
+	list = Theme.new("ScrollingFrame", {
+		BackgroundTransparency = 1,
+		BorderSizePixel = 0,
+		Size = UDim2.new(1, -20, 1, -62),
+		Position = UDim2.fromOffset(14, 62),
+		AutomaticCanvasSize = Enum.AutomaticSize.Y,
+		CanvasSize = UDim2.new(),
+		ScrollBarThickness = 3,
+		ScrollBarImageColor3 = C.TextDim,
+		Parent = page,
+	})
+	Theme.new("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 10), Parent = list })
+	Theme.new("UIPadding", { PaddingRight = UDim.new(0, 8), PaddingBottom = UDim.new(0, 8), Parent = list })
+
+	-- the list sits below the active-job card while there is one
+	activeCard:GetPropertyChangedSignal("Visible"):Connect(function()
+		local top = if activeCard.Visible then 132 else 62
+		list.Position = UDim2.fromOffset(14, top)
+		list.Size = UDim2.new(1, -20, 1, -top)
+	end)
+end
+
 function PhoneController.init()
 	local gui = Theme.new("ScreenGui", {
 		Name = "Phone",
 		ResetOnSpawn = false,
+		-- Sibling keeps the GPS map's layers inside its CanvasGroup (Global lets them escape it)
+		ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
 		Parent = player:WaitForChild("PlayerGui"),
 	})
 
@@ -372,52 +484,56 @@ function PhoneController.init()
 	}, { Theme.corner(26) })
 	buildStatusBar(screen)
 
-	-- app header
-	local header = Theme.new("Frame", { BackgroundTransparency = 1, Size = UDim2.new(1, -28, 0, 48), Position = UDim2.fromOffset(14, 34), Parent = screen })
-	Theme.label({ Text = "Contracts", Font = F.Heavy, TextSize = 24, Size = UDim2.new(1, -80, 0, 28), Parent = header })
-	statusLabel = Theme.caption("", { Size = UDim2.new(1, -80, 0, 16), Position = UDim2.fromOffset(0, 30), Parent = header })
-	-- Gotham has no refresh arrow glyph, so the button says what it does
-	local refresh = Theme.button({
-		Text = "Refresh",
-		TextSize = 12,
-		Size = UDim2.fromOffset(68, 28),
-		AnchorPoint = Vector2.new(1, 0),
-		Position = UDim2.new(1, 0, 0, 0),
-		Parent = header,
-	})
-	refresh.Activated:Connect(function()
-		task.spawn(reload)
-	end)
-
-	-- the job in progress
-	activeCard = Theme.new("Frame", {
-		Name = "ActiveJob",
-		Visible = false,
-		BackgroundColor3 = C.PanelRaised,
-		BorderSizePixel = 0,
-		Size = UDim2.new(1, -28, 0, 62),
-		Position = UDim2.fromOffset(14, 90),
-		Parent = screen,
-	}, { Theme.corner(12), Theme.stroke(0.6, C.Pickup), Theme.padding(12, 10) })
-	Theme.caption("Current job", { Size = UDim2.new(1, 0, 0, 12), Parent = activeCard })
-	activeTitle = Theme.label({ Font = F.Bold, TextSize = 15, TextTruncate = Enum.TextTruncate.AtEnd, Size = UDim2.new(1, 0, 0, 18), Position = UDim2.fromOffset(0, 14), Parent = activeCard })
-	activeBody = Theme.label({ TextSize = 12, TextColor3 = C.TextDim, TextTruncate = Enum.TextTruncate.AtEnd, Size = UDim2.new(1, 0, 0, 14), Position = UDim2.fromOffset(0, 32), Parent = activeCard })
-
-	list = Theme.new("ScrollingFrame", {
+	-- app pages fill the space between the status bar and the tab bar
+	pages.contracts = Theme.new("Frame", {
+		Name = "Contracts",
 		BackgroundTransparency = 1,
-		BorderSizePixel = 0,
-		Size = UDim2.new(1, -20, 1, -126),
-		Position = UDim2.fromOffset(14, 92),
-		AutomaticCanvasSize = Enum.AutomaticSize.Y,
-		CanvasSize = UDim2.new(),
-		ScrollBarThickness = 3,
-		ScrollBarImageColor3 = C.TextDim,
+		Size = UDim2.new(1, 0, 1, -92),
+		Position = UDim2.fromOffset(0, 30),
 		Parent = screen,
 	})
-	Theme.new("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 10), Parent = list })
-	Theme.new("UIPadding", { PaddingRight = UDim.new(0, 8), PaddingBottom = UDim.new(0, 8), Parent = list })
+	pages.gps = Theme.new("Frame", {
+		Name = "Gps",
+		BackgroundTransparency = 1,
+		Size = UDim2.new(1, -20, 1, -96),
+		Position = UDim2.fromOffset(10, 32),
+		Visible = false,
+		Parent = screen,
+	})
+	buildContracts(pages.contracts)
+	GpsApp.build(pages.gps)
 
-	-- the home bar closes the app
+	-- tab bar
+	local tabBar = Theme.new("Frame", {
+		BackgroundColor3 = C.Panel,
+		BorderSizePixel = 0,
+		Size = UDim2.new(1, -20, 0, 38),
+		AnchorPoint = Vector2.new(0.5, 1),
+		Position = UDim2.new(0.5, 0, 1, -22),
+		Parent = screen,
+	}, { Theme.corner(12), Theme.padding(4) })
+	Theme.new("UIListLayout", {
+		FillDirection = Enum.FillDirection.Horizontal,
+		Padding = UDim.new(0, 4),
+		SortOrder = Enum.SortOrder.LayoutOrder,
+		Parent = tabBar,
+	})
+	for i, app in { { "contracts", "Contracts" }, { "gps", "GPS" } } do
+		local tab = Theme.button({
+			Text = app[2],
+			TextSize = 13,
+			LayoutOrder = i,
+			Size = UDim2.new(0.5, -2, 1, 0),
+			Parent = tabBar,
+		})
+		tab.Activated:Connect(function()
+			PhoneController.showApp(app[1])
+		end)
+		tabs[app[1]] = tab
+	end
+	PhoneController.showApp("contracts")
+
+	-- the home bar closes the phone
 	local home = Theme.new("TextButton", {
 		Text = "",
 		BackgroundColor3 = C.TextDim,
@@ -425,19 +541,19 @@ function PhoneController.init()
 		AutoButtonColor = true,
 		Size = UDim2.fromOffset(110, 5),
 		AnchorPoint = Vector2.new(0.5, 1),
-		Position = UDim2.new(0.5, 0, 1, -10),
+		Position = UDim2.new(0.5, 0, 1, -8),
 		Parent = screen,
 	}, { Theme.corner(3) })
 	home.Activated:Connect(PhoneController.close)
 
-	-- the list sits below the active-job card while there is one
-	activeCard:GetPropertyChangedSignal("Visible"):Connect(function()
-		local top = if activeCard.Visible then 162 else 92
-		list.Position = UDim2.fromOffset(14, top)
-		list.Size = UDim2.new(1, -20, 1, -(top + 34))
+	-- the GPS redraws every frame while it's showing
+	RunService.RenderStepped:Connect(function(dt)
+		if isOpen and currentApp == "gps" then
+			GpsApp.update(dt)
+		end
 	end)
 
-	-- the clock follows the in-game time of day; distances on the active card stay current
+	-- the clock follows the in-game time of day; the contracts page stays current
 	local tick = 0
 	RunService.Heartbeat:Connect(function(dt)
 		tick += dt
@@ -447,10 +563,12 @@ function PhoneController.init()
 		tick = 0
 		local minutes = math.floor(Lighting.ClockTime * 60) % (24 * 60)
 		clockLabel.Text = string.format("%02d:%02d", minutes // 60, minutes % 60)
-		refreshActiveCard()
-		-- the board turns over every Config.Jobs.RefreshSeconds; don't let an open phone go stale
-		if os.clock() - lastReload > 20 then
-			task.spawn(reload)
+		if currentApp == "contracts" then
+			refreshActiveCard()
+			-- the board turns over every Config.Jobs.RefreshSeconds; don't let an open phone go stale
+			if os.clock() - lastReload > 20 then
+				task.spawn(reload)
+			end
 		end
 	end)
 
@@ -466,6 +584,10 @@ function PhoneController.init()
 	end)
 
 	contractUpdated.OnClientEvent:Connect(onContractUpdated)
+	player.CharacterAdded:Connect(onCharacter)
+	if player.Character then
+		task.spawn(onCharacter, player.Character)
+	end
 end
 
 return PhoneController

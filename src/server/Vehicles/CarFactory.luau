@@ -48,6 +48,25 @@ local function addSirenLight(part: BasePart)
 	light.Parent = part
 end
 
+local HEADLIGHT_ON = Color3.fromRGB(255, 244, 214)
+local HEADLIGHT_OFF = Color3.fromRGB(196, 192, 178)
+
+-- Turns the headlights (glowing lenses and the beam) on or off and records it in the car's
+-- "Headlights" attribute. Works on both mesh and graybox cars.
+function CarFactory.setHeadlights(car: Model, on: boolean)
+	car:SetAttribute("Headlights", on)
+	for _, part in car:GetChildren() do
+		if part:IsA("BasePart") and string.sub(part.Name, 1, 9) == "Headlight" then
+			part.Material = if on then Enum.Material.Neon else Enum.Material.SmoothPlastic
+			part.Color = if on then HEADLIGHT_ON else HEADLIGHT_OFF
+			local beam = part:FindFirstChildOfClass("SpotLight")
+			if beam then
+				beam.Enabled = on
+			end
+		end
+	end
+end
+
 local function meshTemplate(vehicleType: string): Model?
 	local assets = ServerStorage:FindFirstChild("Assets")
 	local vehicles = assets and assets:FindFirstChild("Vehicles")
@@ -299,6 +318,8 @@ function CarFactory.build(vehicleType: string, color: Color3, cframe: CFrame): M
 	if template then
 		applyMeshes(model, chassis, template, color)
 	end
+	-- police drive with their lights on; players switch theirs with L
+	CarFactory.setHeadlights(model, isPolice)
 
 	return model
 end
