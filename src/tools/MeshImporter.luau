@@ -4,6 +4,8 @@
 -- as a Mesh asset on your account and saves templates under ServerStorage.Assets:
 --   Assets.Vehicles.<Sedan|Police|Van>   (origin = Chassis centre, front = -Z)
 --   Assets.Buildings.<Name>               (origin = footprint centre on the ground, street = -Z)
+--   Assets.Nature.<Name>                  (trees, bush, rocks, grass tuft; origin on the ground)
+--   ReplicatedStorage.Assets.Clouds.<Name> (the client's sky uses these)
 -- Serve the JSON locally, then run from the command bar:
 --   python -m http.server 8765 --bind 127.0.0.1 --directory art/export/roblox
 --   require(game.ServerStorage.Tools.MeshImporter).importAll("http://127.0.0.1:8765")
@@ -11,7 +13,7 @@
 -- uploads parts whose geometry changed.
 --
 -- CreateAssetAsync only works in local plugins, and not on every account yet. Fallback: import
--- art/export/*.fbx and art/export/buildings/*.fbx with File > Import 3D (anywhere in Workspace),
+-- art/export/*.fbx, art/export/buildings/*.fbx and art/export/nature/*.fbx with File > Import 3D (anywhere in Workspace),
 -- then run MeshImporter.adoptAll("http://127.0.0.1:8765"). The JSON supplies each part's
 -- placement, size, color and collision, so the import's scale and position don't matter.
 
@@ -37,7 +39,15 @@ MeshImporter.Buildings = {
 	"GasStation",
 	"Sawmill",
 	"RestStop",
+	"Cabin",
+	"Barn",
+	"Silo",
+	"Lighthouse",
+	"WaterTower",
+	"Hangar",
 }
+MeshImporter.Nature = { "TreeRound", "TreePine", "TreeTall", "Bush", "RockA", "RockB", "RockC", "GrassTuft" }
+MeshImporter.Clouds = { "CloudA", "CloudB", "CloudC" }
 
 type PartData = {
 	name: string,
@@ -48,13 +58,24 @@ type PartData = {
 	triangles: { number },
 }
 
--- building parts that players and cars collide with; everything else is decoration
-local BUILDING_COLLISION: { [string]: Enum.CollisionFidelity } = {
-	Body = Enum.CollisionFidelity.Box,
-	Shop = Enum.CollisionFidelity.Box,
-	Roof = Enum.CollisionFidelity.Hull,
-	Trim = Enum.CollisionFidelity.Default,
-	RoofUnits = Enum.CollisionFidelity.Box,
+-- parts that players and cars collide with, by category; everything else is decoration
+local COLLISION: { [string]: { [string]: Enum.CollisionFidelity } } = {
+	Buildings = {
+		Body = Enum.CollisionFidelity.Box,
+		Shop = Enum.CollisionFidelity.Box,
+		Roof = Enum.CollisionFidelity.Hull,
+		Trim = Enum.CollisionFidelity.Default,
+		RoofUnits = Enum.CollisionFidelity.Box,
+		Stone = Enum.CollisionFidelity.Box,
+		Legs = Enum.CollisionFidelity.Default,
+	},
+	-- tree trunks and rocks stop cars; leaves, grass and clouds don't
+	Nature = {
+		Trunk = Enum.CollisionFidelity.Box,
+		Rock = Enum.CollisionFidelity.Hull,
+	},
+	Vehicles = {},
+	Clouds = {},
 }
 
 local function assetsFolder(): Folder
@@ -69,7 +90,18 @@ local function assetsFolder(): Folder
 end
 
 local function subfolder(name: string): Folder
-	local assets = assetsFolder()
+	-- clouds are drawn by the client, so they live where clients can see them
+	local assets: Instance = assetsFolder()
+	if name == "Clouds" then
+		local replicated = game:GetService("ReplicatedStorage")
+		local shared = replicated:FindFirstChild("Assets")
+		if not shared then
+			shared = Instance.new("Folder")
+			shared.Name = "Assets"
+			shared.Parent = replicated
+		end
+		assets = shared :: Instance
+	end
 	local f = assets:FindFirstChild(name) :: Folder?
 	if not f then
 		local new = Instance.new("Folder")
@@ -173,8 +205,8 @@ local function fetch(baseUrl: string, name: string): { name: string, parts: { Pa
 end
 
 -- Places, colors and sets collision on one template part from its JSON entry.
-local function styleTemplatePart(mp: MeshPart, part: PartData, isBuilding: boolean)
-	local fidelity = if isBuilding then BUILDING_COLLISION[part.name] else nil
+local function styleTemplatePart(mp: MeshPart, part: PartData, category: string)
+	local fidelity = COLLISION[category][part.name]
 	mp.Name = part.name
 	mp.Anchored = true
 	mp.CFrame = CFrame.new(part.center[1], part.center[2], part.center[3])
@@ -219,6 +251,10 @@ local function categoryOf(name: string): string?
 		return "Vehicles"
 	elseif table.find(MeshImporter.Buildings, name) then
 		return "Buildings"
+	elseif table.find(MeshImporter.Nature, name) then
+		return "Nature"
+	elseif table.find(MeshImporter.Clouds, name) then
+		return "Clouds"
 	end
 	return nil
 end
@@ -230,9 +266,9 @@ function MeshImporter.importOne(baseUrl: string, name: string, category: string)
 	model.Name = name
 	for _, part in data.parts do
 		local assetId = upload(part, name)
-		local fidelity = if category == "Buildings" then BUILDING_COLLISION[part.name] else nil
+		local fidelity = COLLISION[category][part.name]
 		local mp = meshPart(assetId, fidelity or Enum.CollisionFidelity.Box)
-		styleTemplatePart(mp, part, category == "Buildings")
+		styleTemplatePart(mp, part, category)
 		mp:SetAttribute("MeshAssetId", assetId)
 		mp.Parent = model
 	end
@@ -281,7 +317,7 @@ function MeshImporter.adoptOne(baseUrl: string, imported: Instance, name: string
 			end
 		end
 		mp.Size = expected:Max(Vector3.one * 0.05)
-		styleTemplatePart(mp, part, category == "Buildings")
+		styleTemplatePart(mp, part, category)
 		mp.Parent = model
 	end
 	for partName in byName do
@@ -317,6 +353,17 @@ function MeshImporter.importAll(baseUrl: string)
 	for _, name in MeshImporter.Buildings do
 		MeshImporter.importOne(baseUrl, name, "Buildings")
 		print(`[MeshImporter] Buildings.{name}`)
+		task.wait()
+	end
+	MeshImporter.importNew(baseUrl, MeshImporter.Nature, "Nature")
+	MeshImporter.importNew(baseUrl, MeshImporter.Clouds, "Clouds")
+end
+
+-- Imports just the named assets of one category (e.g. after adding a few in Blender).
+function MeshImporter.importNew(baseUrl: string, names: { string }, category: string)
+	for _, name in names do
+		MeshImporter.importOne(baseUrl, name, category)
+		print(`[MeshImporter] {category}.{name}`)
 		task.wait()
 	end
 end

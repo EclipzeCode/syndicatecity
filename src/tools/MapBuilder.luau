@@ -242,6 +242,11 @@ local function defineRoads()
 	chain("street", { "S4", "S6", "HE2" })
 end
 
+-- Where roads of different kinds meet, their ends overlap (each piece runs a little past its
+-- node so curves join without gaps). Each kind sits at its own height so the bigger road always
+-- draws on top instead of the two surfaces fighting: dirt under streets under the highway.
+local KIND_LIFT: { [string]: number } = { dirt = -0.15, street = 0, wide = 0, highway = 0.08 }
+
 local function edgeWidth(kind: string): number
 	return if kind == "highway"
 		then HIGHWAY_WIDTH
@@ -320,7 +325,8 @@ local function buildRoads(map: Instance)
 			local pa, pb = a:Lerp(b, (piece - 1) / pieces), a:Lerp(b, piece / pieces)
 			local length = (pb - pa).Magnitude
 			local mid = (pa + pb) / 2
-			local cf = CFrame.lookAt(Vector3.new(mid.X, ROAD_TOP - 0.5, mid.Z), Vector3.new(pb.X, ROAD_TOP - 0.5, pb.Z))
+			local y = ROAD_TOP - 0.5 + KIND_LIFT[edge.kind]
+			local cf = CFrame.lookAt(Vector3.new(mid.X, y, mid.Z), Vector3.new(pb.X, y, pb.Z))
 			local road = part(roads, {
 				Name = "Road",
 				Size = Vector3.new(width, 1, length + width * 0.5),
@@ -395,7 +401,8 @@ local function buildRoads(map: Instance)
 			Name = "Junction",
 			Shape = Enum.PartType.Cylinder,
 			Size = Vector3.new(1, width, width),
-			CFrame = CFrame.new(n.position.X, ROAD_TOP - 0.49, n.position.Z) * CFrame.Angles(0, 0, math.rad(90)),
+			-- a hair above its own kind's road, so the joint covers the road ends meeting in it
+			CFrame = CFrame.new(n.position.X, ROAD_TOP - 0.49 + KIND_LIFT[kind], n.position.Z) * CFrame.Angles(0, 0, math.rad(90)),
 			Color = if kind == "dirt" then Palette.Dirt else Palette.Asphalt,
 			CastShadow = false,
 		})
@@ -433,7 +440,45 @@ end
 -- Props
 ---------------------------------------------------------------------------------------------------
 
+-- Blender props imported by Tools.MeshImporter (ServerStorage.Assets.Nature). Until they're
+-- imported, trees and rocks fall back to graybox balls and cylinders, and bushes and grass tufts
+-- are skipped.
+local function natureTemplate(name: string): Model?
+	local assets = ServerStorage:FindFirstChild("Assets")
+	local nature = assets and assets:FindFirstChild("Nature")
+	return if nature then nature:FindFirstChild(name) :: Model? else nil
+end
+
+-- A clone of a nature template standing at `position`, turned a random way and scaled.
+local function placeProp(parent: Instance, template: Model, position: Vector3, scale: number): Model
+	local model = template:Clone()
+	if math.abs(scale - 1) > 1e-3 then
+		model:ScaleTo(scale)
+	end
+	model:PivotTo(CFrame.new(position) * CFrame.Angles(0, rng:NextNumber() * math.pi * 2, 0))
+	model.Parent = parent
+	return model
+end
+
 local function tree(parent: Instance, position: Vector3, scale: number)
+	-- conifers up north and out west, leafy trees elsewhere
+	local north = position.Z < -900 or position.X < -2400
+	local roll = rng:NextNumber()
+	local variant = if roll < (if north then 0.65 else 0.15)
+		then "TreePine"
+		elseif roll < (if north then 0.8 else 0.4) then "TreeTall"
+		else "TreeRound"
+	local template = natureTemplate(variant)
+	if template then
+		local model = placeProp(parent, template, position, scale)
+		local leaves = model:FindFirstChild("Leaves") :: BasePart?
+		if leaves and variant ~= "TreePine" then
+			leaves.Color = pick(Palette.Leaves)
+		elseif leaves then
+			leaves.Color = leaves.Color:Lerp(pick(Palette.Leaves), 0.25)
+		end
+		return
+	end
 	local trunkHeight = 10 * scale
 	part(parent, {
 		Name = "Trunk",
@@ -464,6 +509,11 @@ local function tree(parent: Instance, position: Vector3, scale: number)
 end
 
 local function rock(parent: Instance, position: Vector3, scale: number)
+	local template = natureTemplate(pick({ "RockA", "RockB", "RockC" }))
+	if template then
+		placeProp(parent, template, position, scale)
+		return
+	end
 	part(parent, {
 		Name = "Rock",
 		Shape = Enum.PartType.Ball,
@@ -472,6 +522,22 @@ local function rock(parent: Instance, position: Vector3, scale: number)
 		Color = Palette.Rock,
 		Material = Enum.Material.Slate,
 	})
+end
+
+-- Bushes and grass tufts only exist as meshes; returns false when there's no template.
+local function smallProp(parent: Instance, name: string, position: Vector3, scale: number): boolean
+	local template = natureTemplate(name)
+	if not template then
+		return false
+	end
+	local model = placeProp(parent, template, position, scale)
+	if name == "Bush" then
+		local leaves = model:FindFirstChild("Leaves") :: BasePart?
+		if leaves then
+			leaves.Color = pick(Palette.Leaves)
+		end
+	end
+	return true
 end
 
 local function crateStack(parent: Instance, position: Vector3, count: number)
@@ -1321,6 +1387,11 @@ local function trailer(parent: Instance, cf: CFrame, color: Color3)
 end
 
 local function waterTower(parent: Instance, position: Vector3)
+	local template = buildingTemplate("WaterTower")
+	if template then
+		placeTemplate(parent, template, position, Vector3.new(0, 0, -1), nil, "WaterTower")
+		return
+	end
 	local model = Instance.new("Model")
 	model.Name = "WaterTower"
 	for _, offset in { Vector3.new(-8, 0, -8), Vector3.new(8, 0, -8), Vector3.new(-8, 0, 8), Vector3.new(8, 0, 8) } do
@@ -1487,9 +1558,25 @@ local function buildIndustrial(map: Instance)
 	end
 
 	-- lighthouse at the end of the north pier: the landmark you see from the highway bridge
+	local base = Vector3.new(pierEnd - 10, SIDEWALK_TOP, -1000)
+	local lighthouseTemplate = buildingTemplate("Lighthouse")
+	if lighthouseTemplate then
+		local model = placeTemplate(industrial, lighthouseTemplate, base, Vector3.new(-1, 0, 0), nil, "Lighthouse")
+		local lamp = model:FindFirstChild("Lamp") :: BasePart?
+		if lamp then
+			local light = Instance.new("PointLight")
+			light.Range = 60
+			light.Brightness = 3
+			light.Color = Color3.fromRGB(255, 220, 170)
+			light.Enabled = false
+			light.Parent = lamp
+			CollectionService:AddTag(lamp, "StreetLight")
+		end
+		flush(industrial, map)
+		return
+	end
 	local lighthouse = Instance.new("Model")
 	lighthouse.Name = "Lighthouse"
-	local base = Vector3.new(pierEnd - 10, SIDEWALK_TOP, -1000)
 	part(lighthouse, {
 		Name = "Tower",
 		Shape = Enum.PartType.Cylinder,
@@ -1715,6 +1802,11 @@ local function treeDensity(p: Vector3): number
 end
 
 local function cabin(parent: Instance, position: Vector3, facing: Vector3)
+	local template = buildingTemplate("Cabin")
+	if template then
+		placeTemplate(parent, template, position, facing, nil, "Cabin")
+		return
+	end
 	local model = Instance.new("Model")
 	model.Name = "Cabin"
 	local cf = CFrame.lookAt(position, position + facing)
@@ -1725,7 +1817,14 @@ local function cabin(parent: Instance, position: Vector3, facing: Vector3)
 	model.Parent = parent
 end
 
+-- The barn's gable (big doors) faces -Z, toward the farm yard, with the silo beside it.
 local function barn(parent: Instance, position: Vector3)
+	local barnTemplate, siloTemplate = buildingTemplate("Barn"), buildingTemplate("Silo")
+	if barnTemplate and siloTemplate then
+		placeTemplate(parent, barnTemplate, position, Vector3.new(0, 0, -1), nil, "Barn")
+		placeTemplate(parent, siloTemplate, position + Vector3.new(30, 0, 8), Vector3.new(0, 0, -1), nil, "Silo")
+		return
+	end
 	local model = Instance.new("Model")
 	model.Name = "Barn"
 	local red = Color3.fromRGB(150, 54, 44)
@@ -1834,12 +1933,24 @@ local function buildOutskirts(map: Instance)
 				local p = center + Vector3.new(math.cos(angle) * r, 0, math.sin(angle) * r)
 				if not nearRoad(p, 10) and not inClearing(p) and not inRiver(p, 10) and not inTown(p, 30) and p.X < COAST_X - 30 then
 					p = Vector3.new(p.X, groundHeight(p.X, p.Z) - 0.5, p.Z)
-					if rng:NextNumber() < 0.08 then
+					local roll = rng:NextNumber()
+					if roll < 0.08 then
 						rock(outskirts, p, rng:NextNumber(0.6, 1.6))
+					elseif roll < 0.2 and smallProp(outskirts, "Bush", p, rng:NextNumber(0.8, 1.4)) then
+						-- a bush instead
 					else
 						tree(outskirts, p, rng:NextNumber(0.8, 1.5))
 					end
 					placed += 1
+				end
+			end
+			-- tufts of grass around the edge of the grove
+			for _ = 1, rng:NextInteger(5, 10) do
+				local angle = rng:NextNumber() * math.pi * 2
+				local r = radius * rng:NextNumber(0.6, 1.3)
+				local p = center + Vector3.new(math.cos(angle) * r, 0, math.sin(angle) * r)
+				if not nearRoad(p, 3) and not inRiver(p, 6) and not inTown(p, 10) and p.X < COAST_X - 30 then
+					smallProp(outskirts, "GrassTuft", Vector3.new(p.X, groundHeight(p.X, p.Z), p.Z), rng:NextNumber(0.9, 1.6))
 				end
 			end
 			task.wait()
@@ -1924,7 +2035,12 @@ local function buildOutskirts(map: Instance)
 		Color = Palette.AsphaltLight,
 		CastShadow = false,
 	})
-	warehouse(outskirts, Vector3.new(2060, ROAD_TOP + 0.1, 1610), Vector3.new(120, 28, 110), Palette.Industrial[2], Vector3.new(0, 0, -1))
+	local hangar = buildingTemplate("Hangar")
+	if hangar then
+		placeTemplate(outskirts, hangar, Vector3.new(2060, ROAD_TOP + 0.1, 1610), Vector3.new(0, 0, -1), nil, "Hangar")
+	else
+		warehouse(outskirts, Vector3.new(2060, ROAD_TOP + 0.1, 1610), Vector3.new(120, 28, 110), Palette.Industrial[2], Vector3.new(0, 0, -1))
+	end
 
 	-- landmarks to steer by
 	radioTower(outskirts, Vector3.new(650, GROUND_Y, -1150))

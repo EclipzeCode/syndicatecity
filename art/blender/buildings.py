@@ -8,6 +8,7 @@ so MapBuilder can keep picking colors from Palette.Buildings / Palette.Industria
 """
 
 import importlib
+import math
 import os
 import sys
 
@@ -323,6 +324,214 @@ def rest_stop(name):
     return b
 
 
+rgb = style.rgb
+
+
+# --- outskirts and landmarks ----------------------------------------------------------------
+
+
+def _cone(b, key, base, height, r0, r1, segments=12):
+    """Tapered cylinder (or cone, r1 = 0) standing on `base`, into batch `key`."""
+    m = Matrix.Translation(Vector(base) + Vector((0, 0, height / 2)))
+    bmesh.ops.create_cone(b.batch(key), cap_ends=True, segments=segments, radius1=r0, radius2=r1,
+                          depth=height, matrix=m)
+
+
+def _dome(b, key, center, radius):
+    """Upper half of a faceted ball."""
+    bm = b.batch(key)
+    before = set(bm.verts)
+    bmesh.ops.create_icosphere(bm, subdivisions=2, radius=radius, matrix=Matrix.Translation(Vector(center)))
+    for v in bm.verts:
+        if v not in before:
+            v.co.z = max(v.co.z, center[2])
+
+
+def _brace(b, key, face, u, z, length, angle, thick=0.6, out=0.0):
+    """A board on a wall, turned `angle` radians in the wall's plane (barn door X braces)."""
+    _, c, t, n, _ = face
+    center = c + t * u + n * (out + thick / 2) + Vector((0, 0, z))
+    turn = Matrix.Rotation(math.atan2(n.x, -n.y), 4, "Z")
+    m = Matrix.Translation(center) @ turn @ Matrix.Rotation(angle, 4, "Y") @ Matrix.Diagonal((length, thick, thick, 1))
+    bmesh.ops.create_cube(b.batch(key), size=1.0, matrix=m)
+
+
+def cabin(name):
+    """Pine Ridge cabin (18 x 14, about 16 tall): log walls, green shutters, porch and chimney."""
+    w, d, eave, rise = 18, 14, 9, 5
+    b = Building(name, PAL["Wood"], seed=21)
+    b.batch("Logs", color=building.TRUNK, surface="Wood")
+    b.batch("Roof", color=rgb(70, 92, 70))
+    b.batch("Shutters", color=rgb(78, 140, 92), surface="Accent")
+    b.batch("Stone", color=building.ROCK, surface="Concrete", bevel=0.1)
+    b.box("Body", (w, d, eave), (0, 0, eave / 2))
+    b.gable_wall("Body", w, d, eave, rise)
+    # log courses: a thin band every 1.5 studs
+    z = 1.2
+    while z < eave:
+        b.ring("Logs", w, d, z - 0.25, z + 0.25, 0.3, out=0.15)
+        z += 1.5
+    front = faces(w, d)[0]
+    b.face_box("Frame", front, 0, 3.6, 4.2, 0.3, 7.4, 0)
+    b.face_box("Shutters", front, 0, 3.4, 3.4, 0.45, 6.8, 0)
+    for u in (-5.5, 5.5):
+        b.face_quad("Windows", front, u - 1.6, u + 1.6, 3.4, 6.6, out=0.2)
+        for side in (-1, 1):
+            b.face_box("Shutters", front, u + side * 2.4, 5.0, 1.4, 0.4, 3.6, 0)
+    for face in faces(w, d)[2:]:
+        b.face_quad("Windows", face, -1.5, 1.5, 3.4, 6.4, out=0.2)
+    # porch: deck, two posts and a small lean-to roof
+    b.box("Logs", (w + 2, 5, 0.8), (0, -d / 2 - 2.5, 0.4))
+    for x in (-w / 2, w / 2):
+        b.box("Logs", (0.8, 0.8, 6.8), (x, -d / 2 - 4.6, 4.2))
+    b.box("Roof", (w + 3, 6.4, 0.5), (0, -d / 2 - 2.8, 7.9), rot_x=math.radians(-12))
+    b.gable("Roof", w, d, eave, rise=rise, overhang=1.2)
+    # stone chimney up the right gable end
+    b.box("Stone", (2.8, 2.8, eave + rise + 3), (w / 2 + 1.2, 2.5, (eave + rise + 3) / 2))
+    return b
+
+
+def barn(name):
+    """Farmstead barn (36 wide, 50 deep, about 28 tall): red boards, white trim, X-braced doors
+    and a hayloft in the gable that faces the street."""
+    # built with the ridge along X (the kit's gables face +-X), doors on the -X gable, then
+    # turned a quarter so that gable is the -Y street face
+    w, d, eave, rise = 50, 36, 16, 11
+    b = Building(name, rgb(178, 62, 50), seed=22)
+    b.batch("Trim", color=rgb(244, 240, 230))
+    b.batch("Roof", color=rgb(84, 84, 92))
+    b.batch("Interior", color=building.INTERIOR, surface="Roof")
+    b.box("Body", (w, d, eave), (0, 0, eave / 2))
+    b.gable_wall("Body", w, d, eave, rise)
+    for y in (-d / 2, d / 2):
+        for x in (-w / 2, w / 2):
+            b.box("Trim", (0.9, 0.9, eave), (x, y, eave / 2))
+    b.band("Trim", w, d, eave - 0.6, eave, 0.25)
+    gable = faces(w, d)[3]  # the -X wall
+    for u in (-6, 6):
+        b.face_box("Body", gable, u, 7, 11.6, 0.4, 14, 0.1)
+        for z in (0.4, 7, 13.6):
+            b.face_box("Trim", gable, u, z, 12, 0.3, 0.8, 0.5)
+        for side in (-1, 1):
+            b.face_box("Trim", gable, u + side * 5.6, 7, 0.8, 0.3, 14, 0.5)
+            _brace(b, "Trim", gable, u, 7, 15.5, side * math.atan2(12.4, 10.8), out=0.5)
+    b.face_quad("Interior", gable, -3.5, 3.5, eave + 0.5, eave + 7.5, out=0.03)
+    for z in (eave + 0.3, eave + 7.7):
+        b.face_box("Trim", gable, 0, z, 8.4, 0.4, 0.6, 0)
+    for face in faces(w, d)[:2]:
+        for u in (-15, -5, 5, 15):
+            b.face_quad("Windows", face, u - 1.8, u + 1.8, 8, 12)
+            b.face_box("Trim", face, u, 7.8, 4.8, 0.4, 0.5, 0)
+    b.gable("Roof", w, d, eave, rise=rise, overhang=1.8)
+    turn = Matrix.Rotation(math.pi / 2, 3, "Z")
+    for batch in b.batches.values():
+        bmesh.ops.rotate(batch["bm"], verts=batch["bm"].verts, cent=(0, 0, 0), matrix=turn)
+    return b
+
+
+def silo(name):
+    """Grain silo (14 across, about 38 tall): ribbed steel with a domed cap."""
+    b = Building(name, rgb(206, 208, 214), seed=23)
+    b.batch("Roof", color=rgb(178, 62, 50))
+    _cone(b, "Body", (0, 0, 0), 30, 7, 7, segments=16)
+    for z in range(3, 30, 5):
+        _cone(b, "Trim", (0, 0, z), 0.6, 7.3, 7.3, segments=16)
+    _dome(b, "Roof", (0, 0, 30), 7.4)
+    b.box("Frame", (0.6, 1.8, 30), (0, -7.4, 15))
+    return b
+
+
+def lighthouse(name):
+    """Harbor lighthouse (about 56 tall): tapered white tower, red bands, gallery and lamp."""
+    b = Building(name, rgb(244, 242, 236), seed=24)
+    b.batch("Bands", color=rgb(206, 64, 58), surface="Accent")
+    b.batch("Roof", color=rgb(206, 64, 58))
+    b.batch("Lamp", color=rgb(255, 236, 190), surface="Headlight")
+    h = 42
+    levels = 6
+    for i in range(levels):
+        z0, z1 = h * i / levels, h * (i + 1) / levels
+        r0, r1 = 7 - 2.4 * i / levels, 7 - 2.4 * (i + 1) / levels
+        _cone(b, "Bands" if i % 2 == 1 else "Body", (0, 0, z0), z1 - z0, r0, r1, segments=14)
+    _cone(b, "Frame", (0, 0, h), 1.0, 6.4, 6.4, segments=14)
+    for k in range(14):
+        a = k / 14 * math.tau
+        b.box("Frame", (0.3, 0.3, 2.4), (math.cos(a) * 6.0, math.sin(a) * 6.0, h + 2.2))
+    _cone(b, "Frame", (0, 0, h + 3.2), 0.4, 6.2, 6.2, segments=14)
+    _cone(b, "Windows", (0, 0, h + 1), 5.5, 3.6, 3.6, segments=10)
+    _cone(b, "Lamp", (0, 0, h + 2), 3.0, 1.6, 1.6, segments=8)
+    _cone(b, "Roof", (0, 0, h + 6.5), 4.5, 4.4, 0, segments=10)
+    b.box("Roof", (0.5, 0.5, 2.5), (0, 0, h + 12))
+    # door at the foot
+    b.face_box("Frame", ("front", Vector((0, -6.9, 0)), Vector((1, 0, 0)), Vector((0, -1, 0)), 4), 0, 3.5, 3.6, 0.5, 7, 0)
+    return b
+
+
+def water_tower(name):
+    """Rail yard water tower (about 92 tall): four legs, cross braces, a tank and a pointed roof."""
+    b = Building(name, rgb(156, 96, 64), seed=25)
+    b.batch("Legs", color=PAL["Roof"], surface="Metal")
+    legs = [(-9, -9), (9, -9), (9, 9), (-9, 9)]
+    for x, y in legs:
+        _cone(b, "Legs", (x, y, 0), 62, 1.0, 1.0, segments=6)
+    for z in (20, 42):
+        for i in range(4):
+            (x0, y0), (x1, y1) = legs[i], legs[(i + 1) % 4]
+            mid = Vector(((x0 + x1) / 2, (y0 + y1) / 2, z))
+            length = math.hypot(x1 - x0, y1 - y0)
+            angle = math.atan2(y1 - y0, x1 - x0)
+            m = Matrix.Translation(mid) @ Matrix.Rotation(angle, 4, "Z") @ Matrix.Diagonal((length, 0.5, 0.5, 1))
+            bmesh.ops.create_cube(b.batch("Legs"), size=1.0, matrix=m)
+    _cone(b, "Body", (0, 0, 60), 22, 14, 14, segments=18)
+    _cone(b, "Trim", (0, 0, 66), 0.8, 14.3, 14.3, segments=18)
+    _cone(b, "Trim", (0, 0, 76), 0.8, 14.3, 14.3, segments=18)
+    _cone(b, "Roof", (0, 0, 82), 9, 15, 0, segments=18)
+    _cone(b, "Frame", (0, 0, 59), 1.0, 15.5, 15.5, segments=18)
+    return b
+
+
+def hangar(name):
+    """Old Airstrip hangar (120 x 110, about 40 tall): an arched quonset roof and a wide door."""
+    w, d, wall = 120, 110, 8
+    b = Building(name, rgb(150, 160, 170), seed=26)
+    b.batch("Roof", color=rgb(170, 176, 184), surface="Metal")
+    b.batch("Door", color=rgb(96, 104, 116), surface="Metal")
+    b.batch("Accent", color=building.CONTAINERS[0], surface="Accent")
+    b.box("Body", (w, d, wall), (0, 0, wall / 2))
+    # arched roof: a half-ring profile (across X) extruded along Y
+    bm = b.batch("Roof")
+    rise, segments, thick = 32, 12, 1.2
+    outer, inner = [], []
+    for i in range(segments + 1):
+        a = math.pi * i / segments
+        outer.append((math.cos(a) * (w / 2 + thick), wall + math.sin(a) * (rise + thick)))
+        inner.append((math.cos(a) * (w / 2), wall + math.sin(a) * rise))
+    profile = outer + list(reversed(inner))
+    front = [bm.verts.new((x, -d / 2 - 1, z)) for x, z in profile]
+    back = [bm.verts.new((x, d / 2 + 1, z)) for x, z in profile]
+    n = len(profile)
+    for i in range(n):
+        j = (i + 1) % n
+        bm.faces.new((front[i], front[j], back[j], back[i]))
+    bm.faces.new(front)
+    bm.faces.new(list(reversed(back)))
+    bmesh.ops.recalc_face_normals(bm, faces=bm.faces[-(n + 2):])
+    # end walls filling the arch
+    for y, flip in ((-d / 2, False), (d / 2, True)):
+        wall_bm = b.batch("Body")
+        pts = [wall_bm.verts.new((x, y, z)) for x, z in inner]
+        wall_bm.faces.new(list(reversed(pts)) if not flip else pts)
+    front_face = faces(w, d)[0]
+    b.face_box("Door", front_face, 0, 14, 76, 0.6, 28, 0)
+    for u in range(-36, 37, 12):
+        b.face_box("Frame", front_face, u, 14, 0.6, 0.4, 28, 0.6)
+    b.face_box("Accent", front_face, 0, 32, 24, 0.5, 5, 0)
+    for face in faces(w, d)[2:]:
+        for u in range(-45, 46, 15):
+            b.face_quad("Windows", face, u - 3, u + 3, 3, 6)
+    return b
+
+
 # --- build everything ---------------------------------------------------------------------
 
 CATALOG = [
@@ -340,6 +549,12 @@ CATALOG = [
     lambda: gas_station("GasStation"),
     lambda: sawmill("Sawmill"),
     lambda: rest_stop("RestStop"),
+    lambda: cabin("Cabin"),
+    lambda: barn("Barn"),
+    lambda: silo("Silo"),
+    lambda: lighthouse("Lighthouse"),
+    lambda: water_tower("WaterTower"),
+    lambda: hangar("Hangar"),
 ]
 
 

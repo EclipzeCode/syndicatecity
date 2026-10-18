@@ -1,4 +1,4 @@
-"""Dump every car and building as JSON mesh data for src/tools/MeshImporter.luau.
+"""Dump every car, building and nature prop as JSON mesh data for src/tools/MeshImporter.luau.
 
 FBX needs Studio's 3D importer, which only runs from its UI. This writes the same geometry as
 art/export/roblox/<Name>.json so MeshImporter can rebuild each object as an EditableMesh in
@@ -24,12 +24,13 @@ from mathutils import Vector
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import buildings  # noqa: E402
 import car  # noqa: E402
+import nature  # noqa: E402
 import police  # noqa: E402
 import sedan  # noqa: E402
 import style  # noqa: E402
 import van  # noqa: E402
 
-for mod in (style, car, sedan, police, van, buildings):
+for mod in (style, car, sedan, police, van, buildings, nature):
     importlib.reload(mod)
 
 OUT_DIR = os.path.join(style.EXPORT_DIR, "roblox")
@@ -106,6 +107,10 @@ def main():
     for root in roots:
         dump(root, root.name)
     bpy.ops.wm.save_as_mainfile(filepath=os.path.join(style.ART_DIR, "buildings.blend"))
+    style.reset_scene()
+    for root in nature.build_all(export=False):
+        dump(root, root.name)
+    bpy.ops.wm.save_as_mainfile(filepath=os.path.join(style.ART_DIR, "nature.blend"))
 
 
 if __name__ == "__main__":

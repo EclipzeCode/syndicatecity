@@ -5,6 +5,7 @@
 -- around the camera. Everything is tinted by the time of day. Nothing here replicates.
 
 local Lighting = game:GetService("Lighting")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 
 local SkyController = {}
@@ -31,7 +32,7 @@ local CLOUD_NIGHT = Color3.fromRGB(70, 78, 104)
 local CLOUD_DUSK = Color3.fromRGB(255, 196, 170)
 local CLOUD_DAY = Color3.fromRGB(255, 255, 255)
 
-type Cloud = { model: Model, parts: { BasePart }, offset: Vector3 }
+type Cloud = { model: Model, parts: { BasePart }, offset: Vector3, turn: CFrame }
 
 local folder: Folder
 local sunPart: Part
@@ -128,8 +129,42 @@ local function buildMoon()
 	circle(disc, UDim2.fromScale(0.11, 0.11), UDim2.fromScale(0.44, 0.74), MOON_CRATER)
 end
 
--- A puffy cloud: overlapping balls on a flattened base, all on one model.
+local function cloudOffset(): Vector3
+	return Vector3.new(rng:NextNumber(-CLOUD_RADIUS, CLOUD_RADIUS), rng:NextNumber(CLOUD_HEIGHT.Min, CLOUD_HEIGHT.Max), rng:NextNumber(-CLOUD_RADIUS, CLOUD_RADIUS))
+end
+
+-- One of the Blender clouds (ReplicatedStorage.Assets.Clouds, from Tools.MeshImporter), if any.
+local function meshCloud(): Cloud?
+	local assets = ReplicatedStorage:FindFirstChild("Assets")
+	local templates = assets and assets:FindFirstChild("Clouds")
+	local choices = if templates then templates:GetChildren() else {}
+	if #choices == 0 then
+		return nil
+	end
+	local model = (choices[rng:NextInteger(1, #choices)] :: Model):Clone()
+	model:ScaleTo(rng:NextNumber(0.8, 1.5))
+	local parts = {}
+	for _, p in model:GetDescendants() do
+		if p:IsA("BasePart") then
+			p.Anchored = true
+			p.CanCollide = false
+			p.CanQuery = false
+			p.CanTouch = false
+			p.CastShadow = false
+			table.insert(parts, p)
+		end
+	end
+	model.Parent = folder
+	return { model = model, parts = parts, offset = cloudOffset(), turn = CFrame.Angles(0, rng:NextNumber() * math.pi * 2, 0) }
+end
+
+-- A puffy cloud: overlapping balls on a flattened base, all on one model. Stands in until the
+-- Blender clouds are imported.
 local function buildCloud(): Cloud
+	local mesh = meshCloud()
+	if mesh then
+		return mesh
+	end
 	local model = Instance.new("Model")
 	model.Name = "Cloud"
 	local parts = {}
@@ -168,11 +203,7 @@ local function buildCloud(): Cloud
 	end
 	model.PrimaryPart = parts[1]
 	model.Parent = folder
-	return {
-		model = model,
-		parts = parts,
-		offset = Vector3.new(rng:NextNumber(-CLOUD_RADIUS, CLOUD_RADIUS), rng:NextNumber(CLOUD_HEIGHT.Min, CLOUD_HEIGHT.Max), rng:NextNumber(-CLOUD_RADIUS, CLOUD_RADIUS)),
-	}
+	return { model = model, parts = parts, offset = cloudOffset(), turn = CFrame.identity }
 end
 
 -- 0 at night, 1 in full day, with a dawn/dusk band where the sun is near the horizon.
@@ -216,7 +247,7 @@ local function update(dt: number)
 			z += CLOUD_RADIUS * 2
 		end
 		cloud.offset = Vector3.new(x, cloud.offset.Y, z)
-		cloud.model:PivotTo(CFrame.new(cloud.offset))
+		cloud.model:PivotTo(CFrame.new(cloud.offset) * cloud.turn)
 	end
 
 	tintTimer += dt
@@ -241,7 +272,7 @@ function SkyController.init()
 	buildMoon()
 	for _ = 1, CLOUD_COUNT do
 		local cloud = buildCloud()
-		cloud.model:PivotTo(CFrame.new(cloud.offset))
+		cloud.model:PivotTo(CFrame.new(cloud.offset) * cloud.turn)
 		table.insert(clouds, cloud)
 	end
 	-- the camera can be replaced; keep the sky with the current one
