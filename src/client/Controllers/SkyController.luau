@@ -1,11 +1,10 @@
 --!strict
 -- A cartoon sky, built locally on each client: a round sun with spinning rays and a cratered
 -- moon that follow the real sun and moon directions (the default ones are hidden; see
--- MapBuilder.applyLighting), and puffy flat-bottomed clouds that drift across the sky and wrap
--- around the camera. Everything is tinted by the time of day. Nothing here replicates.
+-- MapBuilder.applyLighting), and drawn flat-bottomed clouds that drift across the sky and wrap
+-- around the camera. All three are flat billboards, like drawings. Everything is tinted by the time of day. Nothing here replicates.
 
 local Lighting = game:GetService("Lighting")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 
 local SkyController = {}
@@ -31,8 +30,10 @@ local MOON_CRATER = Color3.fromRGB(206, 200, 176)
 local CLOUD_NIGHT = Color3.fromRGB(70, 78, 104)
 local CLOUD_DUSK = Color3.fromRGB(255, 196, 170)
 local CLOUD_DAY = Color3.fromRGB(255, 255, 255)
+-- the darker underside each cloud is drawn over
+local CLOUD_SHADE = Color3.fromRGB(150, 170, 210)
 
-type Cloud = { model: Model, parts: { BasePart }, offset: Vector3, turn: CFrame }
+type Cloud = { part: Part, tops: { Frame }, shades: { Frame }, offset: Vector3 }
 
 local folder: Folder
 local sunPart: Part
@@ -133,77 +134,52 @@ local function cloudOffset(): Vector3
 	return Vector3.new(rng:NextNumber(-CLOUD_RADIUS, CLOUD_RADIUS), rng:NextNumber(CLOUD_HEIGHT.Min, CLOUD_HEIGHT.Max), rng:NextNumber(-CLOUD_RADIUS, CLOUD_RADIUS))
 end
 
--- One of the Blender clouds (ReplicatedStorage.Assets.Clouds, from Tools.MeshImporter), if any.
-local function meshCloud(): Cloud?
-	local assets = ReplicatedStorage:FindFirstChild("Assets")
-	local templates = assets and assets:FindFirstChild("Clouds")
-	local choices = if templates then templates:GetChildren() else {}
-	if #choices == 0 then
-		return nil
+-- A drawn cloud: a billboard (always facing you, like the sun and moon) of overlapping round
+-- puffs on a flat-bottomed base. The same shapes sit behind in a darker tint, nudged down, so
+-- the underside reads as shading without outlines between puffs.
+local function buildCloud(): Cloud
+	local width = rng:NextNumber(240, 420)
+	local height = width * 0.5
+	local p, gui = skyBody("Cloud", 1)
+	gui.Size = UDim2.fromScale(width, height)
+	gui.Brightness = 1.6
+
+	local puffs = {}
+	local count = rng:NextInteger(3, 5)
+	for i = 1, count do
+		local t = (i - 0.5) / count
+		-- biggest in the middle
+		local size = (0.5 - math.abs(t - 0.5) * 0.55) * rng:NextNumber(0.85, 1.1)
+		table.insert(puffs, { x = 0.12 + t * 0.76, y = 0.72 - size * 0.42, size = size })
 	end
-	local model = (choices[rng:NextInteger(1, #choices)] :: Model):Clone()
-	model:ScaleTo(rng:NextNumber(0.8, 1.5))
-	local parts = {}
-	for _, p in model:GetDescendants() do
-		if p:IsA("BasePart") then
-			p.Anchored = true
-			p.CanCollide = false
-			p.CanQuery = false
-			p.CanTouch = false
-			p.CastShadow = false
-			table.insert(parts, p)
+
+	local tops, shades = {}, {}
+	for layer = 1, 2 do
+		local shade = layer == 1
+		local holder = Instance.new("Frame")
+		holder.BackgroundTransparency = 1
+		holder.Size = UDim2.fromScale(1, 1)
+		holder.Position = if shade then UDim2.fromScale(0, 0.06) else UDim2.new()
+		holder.Parent = gui
+		local list = if shade then shades else tops
+		-- the flat base: a wide pill
+		local base = Instance.new("Frame")
+		base.AnchorPoint = Vector2.new(0.5, 1)
+		base.Position = UDim2.fromScale(0.5, 0.86)
+		base.Size = UDim2.fromScale(0.94, 0.3)
+		base.BorderSizePixel = 0
+		local corner = Instance.new("UICorner")
+		corner.CornerRadius = UDim.new(0.5, 0)
+		corner.Parent = base
+		base.Parent = holder
+		table.insert(list, base)
+		for _, puff in puffs do
+			-- puffs are circles: their height is set from their width so they stay round
+			local f = circle(holder, UDim2.fromScale(puff.size * 0.5, puff.size), UDim2.fromScale(puff.x, puff.y), Color3.new(1, 1, 1))
+			table.insert(list, f)
 		end
 	end
-	model.Parent = folder
-	return { model = model, parts = parts, offset = cloudOffset(), turn = CFrame.Angles(0, rng:NextNumber() * math.pi * 2, 0) }
-end
-
--- A puffy cloud: overlapping balls on a flattened base, all on one model. Stands in until the
--- Blender clouds are imported.
-local function buildCloud(): Cloud
-	local mesh = meshCloud()
-	if mesh then
-		return mesh
-	end
-	local model = Instance.new("Model")
-	model.Name = "Cloud"
-	local parts = {}
-	local length = rng:NextNumber(140, 260)
-	local function puff(position: Vector3, size: Vector3, shape: Enum.PartType)
-		local p = Instance.new("Part")
-		p.Shape = shape
-		p.Size = size
-		p.Position = position
-		p.Anchored = true
-		p.CanCollide = false
-		p.CanQuery = false
-		p.CanTouch = false
-		p.CastShadow = false
-		p.Material = Enum.Material.SmoothPlastic
-		p.TopSurface = Enum.SurfaceType.Smooth
-		p.BottomSurface = Enum.SurfaceType.Smooth
-		p.Parent = model
-		table.insert(parts, p)
-	end
-	-- the flat underside
-	puff(Vector3.new(0, 0, 0), Vector3.new(length, 26, length * 0.42), Enum.PartType.Block)
-	local count = rng:NextInteger(4, 7)
-	for i = 1, count do
-		local t = (i - 0.5) / count - 0.5
-		local r = rng:NextNumber(46, 78) * (1 - math.abs(t) * 0.9)
-		puff(
-			Vector3.new(t * length * 0.85, 10 + r * 0.35, rng:NextNumber(-12, 12)),
-			Vector3.one * r * 2,
-			Enum.PartType.Ball
-		)
-	end
-	-- round the block's ends off with two more balls
-	for _, side in { -1, 1 } do
-		puff(Vector3.new(side * length * 0.5, 4, 0), Vector3.one * length * 0.32, Enum.PartType.Ball)
-	end
-	model.PrimaryPart = parts[1]
-	model.Parent = folder
-	return { model = model, parts = parts, offset = cloudOffset(), turn = CFrame.identity }
+	return { part = p, tops = tops, shades = shades, offset = cloudOffset() }
 end
 
 -- 0 at night, 1 in full day, with a dawn/dusk band where the sun is near the horizon.
@@ -247,7 +223,7 @@ local function update(dt: number)
 			z += CLOUD_RADIUS * 2
 		end
 		cloud.offset = Vector3.new(x, cloud.offset.Y, z)
-		cloud.model:PivotTo(CFrame.new(cloud.offset) * cloud.turn)
+		cloud.part.CFrame = CFrame.new(cloud.offset)
 	end
 
 	tintTimer += dt
@@ -255,9 +231,13 @@ local function update(dt: number)
 		tintTimer = 0
 		local day, dusk = daylight()
 		local color = CLOUD_NIGHT:Lerp(CLOUD_DAY, day):Lerp(CLOUD_DUSK, dusk * 0.6)
+		local shade = color:Lerp(CLOUD_SHADE, 0.35)
 		for _, cloud in clouds do
-			for _, p in cloud.parts do
-				p.Color = color
+			for _, f in cloud.tops do
+				f.BackgroundColor3 = color
+			end
+			for _, f in cloud.shades do
+				f.BackgroundColor3 = shade
 			end
 		end
 	end
@@ -272,7 +252,7 @@ function SkyController.init()
 	buildMoon()
 	for _ = 1, CLOUD_COUNT do
 		local cloud = buildCloud()
-		cloud.model:PivotTo(CFrame.new(cloud.offset) * cloud.turn)
+		cloud.part.CFrame = CFrame.new(cloud.offset)
 		table.insert(clouds, cloud)
 	end
 	-- the camera can be replaced; keep the sky with the current one

@@ -5,19 +5,19 @@
 local rgb = Color3.fromRGB
 
 local Palette = {
-	Asphalt = rgb(62, 64, 72),
+	Asphalt = rgb(74, 80, 98),
 	AsphaltLight = rgb(84, 86, 94),
 	LineWhite = rgb(236, 234, 224),
 	LineYellow = rgb(240, 196, 64),
 	Sidewalk = rgb(200, 194, 182),
 	Curb = rgb(170, 164, 154),
 	Grass = rgb(112, 164, 82),
-	-- terrain grass renders darker than a part of the same color; this matches Grass on screen
-	TerrainGrass = rgb(150, 208, 112),
+	-- the terrain ground (drawn flat by MapBuilder's material override)
+	TerrainGrass = rgb(124, 192, 92),
 	GrassDark = rgb(88, 138, 68),
-	Dirt = rgb(156, 122, 88),
+	Dirt = rgb(190, 148, 102),
 	Sand = rgb(232, 214, 162),
-	Water = rgb(64, 146, 196),
+	Water = rgb(72, 188, 226),
 	WaterDeep = rgb(40, 96, 150),
 	Wood = rgb(150, 108, 74),
 	Glass = rgb(54, 62, 76),

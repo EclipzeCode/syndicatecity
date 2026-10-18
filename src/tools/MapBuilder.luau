@@ -341,43 +341,45 @@ local function buildRoads(map: Instance)
 			local trimEnd = if piece == pieces then width / 2 + 2 else 0
 			local lineLength = length - trimStart - trimEnd
 			local lineCf = cf * CFrame.new(0, 0.55, (trimEnd - trimStart) / 2)
-			if (edge.kind == "street" or edge.kind == "wide") and lineLength > 0 then
+			-- a painted strip along the road, `x` from its centre line, `z` along it
+			local function stripe(name: string, stripeWidth: number, stripeLength: number, x: number, color: Color3, z: number?)
 				part(roads, {
-					Name = "CenterLine",
-					Size = Vector3.new(0.6, 0.1, lineLength),
-					CFrame = lineCf,
-					Color = Palette.LineYellow,
+					Name = name,
+					Size = Vector3.new(stripeWidth, 0.1, stripeLength),
+					CFrame = lineCf * CFrame.new(x, 0, z or 0),
+					Color = color,
+					CanCollide = false,
+					CanQuery = false,
 					CastShadow = false,
 				})
-			elseif edge.kind == "highway" and lineLength > 0 then
-				for _, x in { -0.6, 0.6 } do
-					part(roads, {
-						Name = "CenterLine",
-						Size = Vector3.new(0.5, 0.1, lineLength),
-						CFrame = lineCf * CFrame.new(x, 0, 0),
-						Color = Palette.LineYellow,
-						CastShadow = false,
-					})
-				end
-				for _, side in { -1, 1 } do
-					part(roads, {
-						Name = "EdgeLine",
-						Size = Vector3.new(0.6, 0.1, lineLength),
-						CFrame = lineCf * CFrame.new(side * (width / 2 - 2), 0, 0),
-						Color = Palette.LineWhite,
-						CastShadow = false,
-					})
-					-- sparse lane dashes: the highway is long and every dash is a part
-					local dashes = math.floor(lineLength / 48)
-					for i = 0, dashes - 1 do
-						local z = -lineLength / 2 + 24 + i * 48
-						part(roads, {
-							Name = "LaneDash",
-							Size = Vector3.new(0.5, 0.1, 12),
-							CFrame = lineCf * CFrame.new(side * width / 4, 0, z),
-							Color = Palette.LineWhite,
-							CastShadow = false,
-						})
+			end
+			if lineLength > 0 then
+				if edge.kind == "dirt" then
+					-- two worn wheel ruts, a shade darker than the road
+					for _, side in { -1, 1 } do
+						stripe("Rut", 3, lineLength, side * width * 0.2, Palette.Dirt:Lerp(Palette.Trunk, 0.3))
+					end
+				else
+					-- a crisp light edge on both sides, like an outline
+					for _, side in { -1, 1 } do
+						stripe("EdgeLine", 0.9, lineLength, side * (width / 2 - 1.6), Palette.LineWhite)
+					end
+					if edge.kind == "highway" then
+						for _, x in { -0.6, 0.6 } do
+							stripe("CenterLine", 0.5, lineLength, x, Palette.LineYellow)
+						end
+						-- sparse lane dashes: the highway is long and every dash is a part
+						for _, side in { -1, 1 } do
+							for i = 0, math.floor(lineLength / 48) - 1 do
+								stripe("LaneDash", 0.6, 12, side * width / 4, Palette.LineWhite, -lineLength / 2 + 24 + i * 48)
+							end
+						end
+					else
+						-- a dashed yellow centre line
+						local dashes = math.floor(lineLength / 22)
+						for i = 0, dashes - 1 do
+							stripe("CenterDash", 0.7, 10, 0, Palette.LineYellow, -lineLength / 2 + 11 + i * 22 + (lineLength - dashes * 22) / 2)
+						end
 					end
 				end
 			end
@@ -1145,13 +1147,31 @@ local function buildGround(map: Instance)
 		end
 	end
 
+	-- cartoon water: flat, opaque turquoise with small rolling waves (WaterController draws
+	-- white wave crests on top). A part plane can't do this: Roblox draws parts that sit inside
+	-- solid terrain through the ground.
 	terrain.WaterColor = Palette.Water
-	terrain.WaterTransparency = 0.6
-	terrain.WaterReflectance = 0.25
-	terrain.WaterWaveSize = 0.08
-	terrain.WaterWaveSpeed = 6
+	terrain.WaterTransparency = 0
+	terrain.WaterReflectance = 0
+	terrain.WaterWaveSize = 0.15
+	terrain.WaterWaveSpeed = 8
 	terrain:SetMaterialColor(GROUND_MATERIAL, Palette.TerrainGrass)
 	terrain:SetMaterialColor(Enum.Material.Sand, Palette.Sand)
+	-- cartoon ground: grass and sand are overridden by untextured variants, so terrain draws in
+	-- flat color like the rest of the map
+	local MaterialService = game:GetService("MaterialService")
+	for _, material in { GROUND_MATERIAL, Enum.Material.Sand } do
+		local name = "Flat" .. material.Name
+		local variant = MaterialService:FindFirstChild(name) :: MaterialVariant?
+		if not variant then
+			local new = Instance.new("MaterialVariant")
+			new.Name = name
+			new.Parent = MaterialService
+			variant = new
+		end
+		;(variant :: MaterialVariant).BaseMaterial = material
+		MaterialService:SetBaseMaterialOverride(material, name)
+	end
 
 	-- the sea around the island, and the river through it, in slices so each fill stays a
 	-- manageable size; players can swim back to shore
@@ -1182,6 +1202,7 @@ local function buildGround(map: Instance)
 		terrain:FillBlock(CFrame.new(x, SEA_FLOOR - 2, z + d / 2), Vector3.new(RIVER_X1 - RIVER_X0 + 40, 4, d), Enum.Material.Sand)
 	end
 	buildCoast(terrain)
+
 
 	-- hills: about a tenth as tall as they are wide in radius, so the steepest part is ~9 degrees
 	-- and a car can drive over them (slowly: it's off-road)
@@ -1276,7 +1297,9 @@ local function buildDowntown(map: Instance)
 	for xi = 1, #GRID_X - 1 do
 		for zi = 1, #GRID_Z do
 			local x, z = GRID_X[xi], GRID_Z[zi]
-			local corner = Vector3.new(x + STREET_WIDTH / 2 + 2, 0, z + STREET_WIDTH / 2 + 2)
+			-- the south row has no block below it, so its lamps stand on the grass, not a sidewalk
+			local base = if zi == #GRID_Z then GROUND_Y - SIDEWALK_TOP else 0
+			local corner = Vector3.new(x + STREET_WIDTH / 2 + 2, base, z + STREET_WIDTH / 2 + 2)
 			streetLight(downtown, corner, Vector3.new(-1, 0, 0))
 		end
 	end
@@ -1909,7 +1932,6 @@ local function buildOutskirts(map: Instance)
 				Size = size,
 				Position = p + Vector3.new(0, 0.1, 0),
 				Color = pick(fieldColors),
-				Material = Enum.Material.Grass,
 				CastShadow = false,
 			})
 			field:SetAttribute("Surface", "grass")
@@ -1990,7 +2012,6 @@ local function buildOutskirts(map: Instance)
 		Size = Vector3.new(380, 0.4, 280),
 		Position = Vector3.new(-750, GROUND_Y + 0.1, -2270),
 		Color = Palette.Dirt,
-		Material = Enum.Material.Ground,
 		CastShadow = false,
 	})
 	yard:SetAttribute("Surface", "dirt")
@@ -2005,7 +2026,6 @@ local function buildOutskirts(map: Instance)
 		Size = Vector3.new(200, 0.4, 140),
 		Position = Vector3.new(-880, GROUND_Y + 0.1, 1850),
 		Color = Palette.Dirt,
-		Material = Enum.Material.Ground,
 		CastShadow = false,
 	})
 	farmYard:SetAttribute("Surface", "dirt")

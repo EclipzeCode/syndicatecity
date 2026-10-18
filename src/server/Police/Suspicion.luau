@@ -62,6 +62,11 @@ function Suspicion.step(value: number, obs: Observation, dt: number, cfg: Config
 	return math.max(ceiling, value - cfg.DecayPerSecond * dt)
 end
 
+-- Adds a one-off jolt of suspicion (being rammed, being blocked), up to the pursuit threshold.
+function Suspicion.bump(value: number, amount: number, cfg: Config): number
+	return math.clamp(value + amount, 0, cfg.PursuitThreshold)
+end
+
 -- The next state for an encounter in progress. `unseen` is how long the patrol has gone without
 -- seeing the player; `elapsed` how long it has been in `state`.
 function Suspicion.nextState(state: State, value: number, unseen: number, elapsed: number, cfg: Config): State

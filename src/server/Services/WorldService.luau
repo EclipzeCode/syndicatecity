@@ -1,5 +1,6 @@
 --!strict
--- Day/night cycle. Street lights (tagged "StreetLight" by MapBuilder) switch on after dusk.
+-- Day/night cycle. Street lights (tagged "StreetLight" by MapBuilder) switch on after dusk, and so
+-- do the headlights of AI cars (police and traffic, registered with autoHeadlights).
 
 local CollectionService = game:GetService("CollectionService")
 local Lighting = game:GetService("Lighting")
@@ -7,11 +8,24 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 
 local Config = require(ReplicatedStorage.Shared.Config)
+local CarFactory = require(script.Parent.Parent.Vehicles.CarFactory)
 
 local WorldService = {}
 
+local AUTO_TAG = "AutoHeadlights"
+
 local function isNight(clock: number): boolean
 	return clock >= 18.3 or clock < 6.2
+end
+
+function WorldService.isNight(): boolean
+	return isNight(Lighting.ClockTime)
+end
+
+-- Lets the day/night cycle drive this car's headlights from now on (AI cars; players use L).
+function WorldService.autoHeadlights(car: Model)
+	CollectionService:AddTag(car, AUTO_TAG)
+	CarFactory.setHeadlights(car, WorldService.isNight())
 end
 
 local function setStreetLights(on: boolean)
@@ -22,6 +36,11 @@ local function setStreetLights(on: boolean)
 		end
 		if lamp:IsA("BasePart") then
 			lamp.Material = if on then Enum.Material.Neon else Enum.Material.SmoothPlastic
+		end
+	end
+	for _, car in CollectionService:GetTagged(AUTO_TAG) do
+		if car:IsA("Model") then
+			CarFactory.setHeadlights(car, on)
 		end
 	end
 end

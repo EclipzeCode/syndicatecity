@@ -185,9 +185,50 @@ local Config = {
 			CooldownSeconds = 20,
 			-- while investigating, the patrol tails at about this distance
 			TailDistance = 45,
+			-- ramming a patrol car: suspicion RamSuspicion at an impact of RamFullImpact (studs/s of
+			-- knock), scaled 0.5x-2.5x by how hard. A hard ram or two calls a pursuit.
+			RamSuspicion = 40,
+			RamFullImpact = 30,
+			-- standing (or parking) in a patrol car's way: after BlockPatienceSeconds it starts
+			-- getting suspicious at BlockSuspicionPerSecond
+			BlockPatienceSeconds = 3,
+			BlockSuspicionPerSecond = 20,
 			-- optional radio chirp when an investigation starts ("rbxassetid://..."); empty = silent
 			RadioSoundId = "",
 		},
+	},
+
+	-- How AI cars (police and traffic) drive: they brake for anything in their lane ahead, stop
+	-- StopGap studs short of it, and go around it if it hasn't moved after PassAfterSeconds.
+	Driving = {
+		LookAhead = 18,
+		LookAheadPerSpeed = 1.1,
+		LaneHalfWidth = 6,
+		StopGap = 6,
+		-- how hard they brake toward the obstacle (allowed speed per stud of gap)
+		BrakeEagerness = 1.2,
+		PassAfterSeconds = 6,
+		PassSeconds = 3.5,
+		PassSpeed = 18,
+		-- a sudden change of velocity this big, with a player's car this close and closing at
+		-- least this fast, counts as being rammed by that player
+		ImpactDeltaV = 16,
+		ImpactRange = 18,
+		ImpactClosingSpeed = 8,
+	},
+
+	-- Civilian cars that cruise the roads around players.
+	Traffic = {
+		Count = 10,
+		-- new cars appear on a road this far from some player (out of sight), and are removed
+		-- once every player is further than DespawnDistance
+		SpawnRange = NumberRange.new(250, 900),
+		DespawnDistance = 1400,
+		-- cruising speed by road kind, studs/s (under the 80 limit)
+		Speeds = { street = 40, wide = 44, highway = 68, dirt = 28 },
+		VanChance = 0.3,
+		-- after being rammed, a car stops for this long before carrying on
+		RamStopSeconds = 2,
 	},
 
 	-- On-foot speeds in studs/second; hold Shift (or click the left stick) to sprint

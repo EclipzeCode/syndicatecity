@@ -5,7 +5,6 @@
 --   Assets.Vehicles.<Sedan|Police|Van>   (origin = Chassis centre, front = -Z)
 --   Assets.Buildings.<Name>               (origin = footprint centre on the ground, street = -Z)
 --   Assets.Nature.<Name>                  (trees, bush, rocks, grass tuft; origin on the ground)
---   ReplicatedStorage.Assets.Clouds.<Name> (the client's sky uses these)
 -- Serve the JSON locally, then run from the command bar:
 --   python -m http.server 8765 --bind 127.0.0.1 --directory art/export/roblox
 --   require(game.ServerStorage.Tools.MeshImporter).importAll("http://127.0.0.1:8765")
@@ -47,7 +46,6 @@ MeshImporter.Buildings = {
 	"Hangar",
 }
 MeshImporter.Nature = { "TreeRound", "TreePine", "TreeTall", "Bush", "RockA", "RockB", "RockC", "GrassTuft" }
-MeshImporter.Clouds = { "CloudA", "CloudB", "CloudC" }
 
 type PartData = {
 	name: string,
@@ -69,13 +67,12 @@ local COLLISION: { [string]: { [string]: Enum.CollisionFidelity } } = {
 		Stone = Enum.CollisionFidelity.Box,
 		Legs = Enum.CollisionFidelity.Default,
 	},
-	-- tree trunks and rocks stop cars; leaves, grass and clouds don't
+	-- tree trunks and rocks stop cars; leaves and grass don't
 	Nature = {
 		Trunk = Enum.CollisionFidelity.Box,
 		Rock = Enum.CollisionFidelity.Hull,
 	},
 	Vehicles = {},
-	Clouds = {},
 }
 
 local function assetsFolder(): Folder
@@ -90,18 +87,7 @@ local function assetsFolder(): Folder
 end
 
 local function subfolder(name: string): Folder
-	-- clouds are drawn by the client, so they live where clients can see them
-	local assets: Instance = assetsFolder()
-	if name == "Clouds" then
-		local replicated = game:GetService("ReplicatedStorage")
-		local shared = replicated:FindFirstChild("Assets")
-		if not shared then
-			shared = Instance.new("Folder")
-			shared.Name = "Assets"
-			shared.Parent = replicated
-		end
-		assets = shared :: Instance
-	end
+	local assets = assetsFolder()
 	local f = assets:FindFirstChild(name) :: Folder?
 	if not f then
 		local new = Instance.new("Folder")
@@ -253,8 +239,6 @@ local function categoryOf(name: string): string?
 		return "Buildings"
 	elseif table.find(MeshImporter.Nature, name) then
 		return "Nature"
-	elseif table.find(MeshImporter.Clouds, name) then
-		return "Clouds"
 	end
 	return nil
 end
@@ -356,7 +340,6 @@ function MeshImporter.importAll(baseUrl: string)
 		task.wait()
 	end
 	MeshImporter.importNew(baseUrl, MeshImporter.Nature, "Nature")
-	MeshImporter.importNew(baseUrl, MeshImporter.Clouds, "Clouds")
 end
 
 -- Imports just the named assets of one category (e.g. after adding a few in Blender).

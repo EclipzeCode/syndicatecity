@@ -30,7 +30,7 @@ Code lives in `src/` and syncs into Studio. Save the place as `SmugglingGame.rbx
 1. Spawn at the Sunset Motel. Stand on a green pad and hold **E** to get a Sedan or Van; press **F** at your car to drive (friends can ride along). Stay on the roads: on grass or sand a car manages about a third of its top speed. Dirt roads count as roads.
 2. Press **P** (or click **Phone**) to open the contract board and accept a contract. Contracts are **Routine** (short, cheap), **Standard** or **High-value** (long haul, more pay, cargo police notice more easily). Accepting gives you a **code word**; the GPS routes you to the pickup.
 3. At the pickup a **contact** waits. Press **E** to talk and pick the right answer (usually your code word; wrong answers just get a retry). The crate appears on your car; deliver it and hold **E** at the dropoff. Payment goes to dirty cash.
-4. Police patrol all the time (most of them downtown). A patrol that **sees** you speeding, or gets a close look at your cargo, starts watching you (the status panel outline turns blue). If it gets suspicious enough it **tails** you; drive clean and it loses interest. Keep it up and it calls a **pursuit**: you're **wanted**. Unseen speeding and gunfire also raise heat; at 50 heat you're wanted too.
+4. Police patrol all the time (most of them downtown), alongside civilian traffic. AI cars keep to their lane and brake for anything in it, then drive around it if it won't move. A patrol that **sees** you speeding, or gets a close look at your cargo, starts watching you (the status panel outline turns blue). If it gets suspicious enough it **tails** you; drive clean and it loses interest. Keep it up and it calls a **pursuit**: you're **wanted**. Ramming a patrol car, or standing or parking in its way and not moving, gets you the same attention. Unseen speeding and gunfire also raise heat; at 50 heat you're wanted too.
 5. Wanted: cops chase you with sirens. Stay out of their sight to drain heat. If a cop stays next to you while you're slow or stopped, you're **busted**: cargo confiscated, 25% of dirty cash fined, car impounded, released at the police station.
 
 **Pistol** (on foot only): click to fire, **R** to reload. Hitting a police car 12 times disables it for 20 s, but makes you wanted. Cops fire back only at wanted players running on foot; anyone standing still gets arrested instead. No blood: hits show a white flash, and players at 0 health are "knocked out" and respawn (a wanted player who gets knocked out is arrested).
@@ -80,5 +80,8 @@ Everything is in `src/shared/Config.luau`:
 | Contract tiers: drive time, payout, risk, cargo | `Jobs.Tiers`, `Jobs.RouteSpeeds` |
 | Contact reach and answer debounce | `Jobs.Contact` |
 | Off-road slowdown | `Vehicles.Offroad` |
+| How AI cars brake, pass and notice being rammed | `Driving` |
+| Ramming and blocking a patrol | `Police.Detection.RamSuspicion`, `RamFullImpact`, `BlockPatienceSeconds`, `BlockSuspicionPerSecond` |
+| Civilian traffic: count, speeds, where it spawns | `Traffic` |
 
 Contact lines, questions, decoy answers and code words are server-only, in `src/server/Jobs/ContactLines.luau`.

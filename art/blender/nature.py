@@ -1,12 +1,12 @@
-"""Nature props for the v0.1 map: trees, a bush, rocks, a grass tuft and clouds.
+"""Nature props for the v0.1 map: trees, a bush, rocks and a grass tuft.
 
 Same look as the cars and buildings (style.py): low poly, flat shading, flat Palette colors, a
 little chunky. Each prop is a few objects, one material each, so it imports as a few MeshParts:
-trees are Trunk + Leaves (MapBuilder tints Leaves from Palette.Leaves), rocks are Rock, the tuft
-is Blades and clouds are Puff.
+trees are Trunk + Leaves (MapBuilder tints Leaves from Palette.Leaves), rocks are Rock and the
+tuft is Blades.
 
-Origins: on the ground at the centre of the footprint (trees, rocks, tuft); clouds at the
-centre of their flat underside. Sizes are a typical instance in studs; MapBuilder scales them.
+Origins: on the ground at the centre of the footprint. Sizes are a typical instance in studs;
+MapBuilder scales them.
 
     blender --background --python art/blender/nature.py
 """
@@ -33,7 +33,6 @@ BUSH = rgb(110, 176, 92)
 TRUNK = rgb(112, 82, 60)
 ROCK = rgb(150, 150, 158)
 BLADES = rgb(124, 190, 92)
-CLOUD = rgb(250, 250, 255)
 
 
 class Prop:
@@ -191,32 +190,6 @@ def grass_tuft(name="GrassTuft", seed=6):
     return p
 
 
-# --- clouds ---------------------------------------------------------------------------------
-
-
-def cloud(name, seed, length, puffs):
-    """A cartoon cloud: a long flat-bottomed base with big round puffs piled on top, the middle
-    one tallest (smoother than the other props, so it reads soft from the ground)."""
-    p = Prop(name, seed)
-    p.batch("Puff", CLOUD, "Accent")
-    bm = p.batches["Puff"]["bm"]
-    # the base: a stretched ball, cut flat underneath
-    before = set(bm.verts)
-    bmesh.ops.create_icosphere(bm, subdivisions=3, radius=1.0,
-                               matrix=Matrix.Diagonal((length * 0.5, length * 0.22, length * 0.16, 1)))
-    for v in bm.verts:
-        if v not in before:
-            v.co.z = max(v.co.z, 0.0)
-    for i in range(puffs):
-        t = (i + 0.5) / puffs - 0.5
-        # biggest in the middle, smaller toward the ends
-        r = length * (0.24 - abs(t) * 0.18) * p.rng.uniform(0.9, 1.1)
-        x = t * length * 0.78
-        y = p.rng.uniform(-0.05, 0.05) * length
-        p.blob("Puff", (x, y, length * 0.06 + r * 0.45), r, subdivisions=3, jitter=0.02, floor=0.0)
-    return p
-
-
 CATALOG = [
     lambda: tree_round(),
     lambda: tree_pine(),
@@ -228,21 +201,14 @@ CATALOG = [
     lambda: grass_tuft(),
 ]
 
-CLOUDS = [
-    lambda: cloud("CloudA", 21, 180, 5),
-    lambda: cloud("CloudB", 22, 240, 6),
-    lambda: cloud("CloudC", 23, 140, 4),
-]
-
-
 def build_all(export=True):
     roots = []
-    for make in CATALOG + CLOUDS:
+    for make in CATALOG:
         roots.append(make().finish(export=export))
     x = 0.0
     for root in roots:
         root.location = (x, 300, 0)
-        x += 60 if not root.name.startswith("Cloud") else 280
+        x += 60
     return roots
 
 

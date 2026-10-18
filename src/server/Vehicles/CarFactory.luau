@@ -71,12 +71,16 @@ end
 -- steer them (CarEffectsController sets each motor's Transform). C0 is the wheel's position
 -- relative to the chassis with no rotation; C1 carries the part's own orientation, so a
 -- Transform about X spins it around the axle and one about Y steers it.
+-- Wheels sit this far lower than the suspension holds the car, so the faceted tires read as
+-- pressing on the road instead of hovering a hair above it.
+local WHEEL_SINK = 0.3
+
 local function wheelMotor(chassis: BasePart, p: BasePart, offset: CFrame, isFront: boolean, radius: number)
 	local motor = Instance.new("Motor6D")
 	motor.Name = "WheelMotor"
 	motor.Part0 = chassis
 	motor.Part1 = p
-	motor.C0 = CFrame.new(offset.Position)
+	motor.C0 = CFrame.new(offset.Position - Vector3.new(0, WHEEL_SINK, 0))
 	motor.C1 = (offset - offset.Position):Inverse()
 	motor:SetAttribute("Front", isFront)
 	motor:SetAttribute("Radius", radius)
@@ -348,8 +352,8 @@ function CarFactory.build(vehicleType: string, color: Color3, cframe: CFrame): M
 	if template then
 		applyMeshes(model, chassis, template, color)
 	end
-	-- police drive with their lights on; players switch theirs with L
-	CarFactory.setHeadlights(model, isPolice)
+	-- lights start off: players switch theirs with L, and WorldService turns AI cars' on at night
+	CarFactory.setHeadlights(model, false)
 
 	return model
 end

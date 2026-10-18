@@ -9,6 +9,7 @@ local VehicleService = require(Services.VehicleService)
 local JobService = require(Services.JobService)
 local CombatService = require(Services.CombatService)
 local PoliceService = require(Services.PoliceService)
+local TrafficService = require(Services.TrafficService)
 local WorldService = require(Services.WorldService)
 
 PlayerDataService.init()
@@ -17,6 +18,7 @@ VehicleService.init()
 JobService.init()
 CombatService.init()
 PoliceService.init()
+TrafficService.init()
 WorldService.init()
 
 -- Studio-only test hook: game.ServerStorage.Debug:Invoke("heat", 60) gives every player heat;
@@ -33,6 +35,7 @@ if game:GetService("RunService"):IsStudio() then
 				JobService = JobService,
 				PlayerDataService = PlayerDataService,
 				PoliceService = PoliceService,
+				TrafficService = TrafficService,
 			}, command)
 		end
 		for _, player in game:GetService("Players"):GetPlayers() do

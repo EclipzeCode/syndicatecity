@@ -74,6 +74,8 @@ local function suspicionTests()
 	check("investigating -> returning after losing sight", S("Investigating", 50, 6, 1, CFG) == "Returning")
 	check("investigation can't last forever", S("Investigating", 60, 0, 35, CFG) == "Returning")
 	check("patrolling isn't changed by nextState", S("Patrolling", 100, 0, 0, CFG) == "Patrolling")
+	check("a jolt adds suspicion", Suspicion.bump(10, 30, CFG) == 40)
+	check("a jolt stops at the pursuit threshold", Suspicion.bump(90, 30, CFG) == 100)
 end
 
 ---------------------------------------------------------------------------------------------------
@@ -366,6 +368,71 @@ local function meetContact(services, player)
 	return `talking to the contact at {name}`
 end
 
+local function drivingTests(services, player)
+	local Heat = services.HeatService
+	Heat.clear(player)
+	services.JobService.debugFail(player)
+	local root = rootOf(player)
+	local now = os.clock()
+
+	-- traffic is out and lights follow the time of day
+	task.wait(2.5)
+	local traffic = services.TrafficService.debugSnapshot()
+	check("civilian traffic is on the roads", #traffic >= Config.Traffic.Count, #traffic)
+	local night = game.Lighting.ClockTime >= 18.3 or game.Lighting.ClockTime < 6.2
+	local wrongLights = 0
+	for _, cop in services.PoliceService.debugSnapshot() do
+		if cop.car:GetAttribute("Headlights") ~= night then
+			wrongLights += 1
+		end
+	end
+	check(`police headlights are {if night then "on at night" else "off by day"}`, wrongLights == 0, wrongLights)
+
+	-- standing in a patrol car's lane: it stops short instead of running you over
+	local target
+	for _, cop in services.PoliceService.debugSnapshot() do
+		if cop.state == "Patrolling" and cop.car.PrimaryPart.AssemblyLinearVelocity.Magnitude > 20 then
+			target = cop
+			break
+		end
+	end
+	if not target then
+		check("a moving patrol car to stand in front of", false, "none moving")
+		return
+	end
+	local car = target.car
+	root.Anchored = true
+	local cf = car.PrimaryPart.CFrame
+	local stand = cf.Position + cf.LookVector * 45
+	player.Character:PivotTo(CFrame.new(stand.X, stand.Y + 1, stand.Z))
+	task.wait(4)
+	local speed = car.PrimaryPart.AssemblyLinearVelocity.Magnitude
+	local gap = (car.PrimaryPart.Position - root.Position).Magnitude
+	check("a patrol car brakes for someone in its lane", speed < 4 and gap > 6, string.format("speed %.1f gap %.1f", speed, gap))
+
+	-- and if you don't move, it takes an interest in you
+	task.wait(5)
+	local cop = snapshotFor(services, player)
+	check("blocking a patrol car makes it suspicious", cop ~= nil and cop.car == car, cop and cop.state)
+	root.Anchored = false
+	Heat.clear(player)
+	task.wait(0.5)
+
+	-- ramming a patrol car: a hard knock gets you tailed straight away
+	local rammed = services.PoliceService.debugRam(player, 45)
+	task.wait(0.8)
+	cop = nil
+	for _, entry in services.PoliceService.debugSnapshot() do
+		if entry.car == rammed then
+			cop = entry
+		end
+	end
+	check("ramming a patrol car gets you noticed", cop ~= nil and cop.watch == player, cop and cop.state)
+	check("a hard ram goes straight to a tail", cop ~= nil and (cop.state == "Investigating" or cop.state == "Pursuing"), cop and `{cop.state} {cop.suspicion}`)
+	check("ramming adds heat", Heat.getHeat(player) > 0, Heat.getHeat(player))
+	Heat.clear(player)
+end
+
 return function(services, mode: string?)
 	if mode == "contact" then
 		return meetContact(services, Players:GetPlayers()[1])
@@ -380,6 +447,8 @@ return function(services, mode: string?)
 		check("handoff tests ran", ok, err)
 		ok, err = pcall(policeTests, services, player)
 		check("police tests ran", ok, err)
+		ok, err = pcall(drivingTests, services, player)
+		check("driving tests ran", ok, err)
 		local root = rootOf(player)
 		if root then
 			root.Anchored = false
