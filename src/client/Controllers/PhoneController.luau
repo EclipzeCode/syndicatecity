@@ -43,9 +43,17 @@ local activeTitle: TextLabel
 local activeBody: TextLabel
 local isOpen = false
 
--- the job the player is on, if any, and how far along it is
+-- the job the player is on, if any, how far along it is, and the code the pickup contact wants
 local activeContract: Types.Contract? = nil
 local activeStage: string? = nil
+local activePasscode: string? = nil
+
+-- tier label colors on contract cards
+local TIER_COLORS: { [string]: Color3 } = {
+	Routine = C.Cash,
+	Standard = C.Dropoff,
+	["High-value"] = C.Danger,
+}
 
 local function pointPosition(name: string, tag: string): Vector3?
 	for _, part in CollectionService:GetTagged(tag) do
@@ -133,14 +141,28 @@ local function contractCard(contract: Types.Contract, index: number)
 		Position = UDim2.new(1, -90, 0, 0),
 		Parent = head,
 	})
-	routeRow(card, 2, C.Pickup, "Pick up", contract.pickupName, distanceTo(pickup))
+	if contract.tier then
+		local tierColor = TIER_COLORS[contract.tier] or C.TextDim
+		local drive = if contract.routeSeconds then ` · ~{contract.routeSeconds}s drive` else ""
+		Theme.label({
+			Text = `<font color="#{tierColor:ToHex()}">{string.upper(contract.tier)}</font>  {contract.cargo or "Cargo"}{drive}`,
+			RichText = true,
+			TextSize = 12,
+			TextColor3 = C.TextDim,
+			TextTruncate = Enum.TextTruncate.AtEnd,
+			Size = UDim2.new(1, 0, 0, 14),
+			LayoutOrder = 2,
+			Parent = card,
+		})
+	end
+	routeRow(card, 3, C.Pickup, "Pick up", contract.pickupName, distanceTo(pickup))
 	local route = if pickup and dropoff then Theme.distance((dropoff - pickup).Magnitude) else ""
-	routeRow(card, 3, C.Dropoff, "Deliver", contract.dropoffName, route)
+	routeRow(card, 4, C.Dropoff, "Deliver", contract.dropoffName, route)
 
 	local busy = activeContract ~= nil
 	local accept = Theme.button({
 		Text = if busy then "Finish your current job first" else "Accept",
-		LayoutOrder = 4,
+		LayoutOrder = 5,
 		Size = UDim2.new(1, 0, 0, 34),
 		BackgroundColor3 = if busy then C.Track else C.Cash,
 		TextColor3 = if busy then C.TextDim else Color3.fromRGB(14, 30, 18),
@@ -182,8 +204,9 @@ local function refreshActiveCard()
 		activeBody.Text = `{distanceTo(pointPosition(contract.dropoffName, Config.Tags.Dropoff))} away · keep a low profile`
 		activeTitle.TextColor3 = C.Dropoff
 	else
-		activeTitle.Text = `Pick up at {contract.pickupName}`
-		activeBody.Text = `{distanceTo(pointPosition(contract.pickupName, Config.Tags.Pickup))} away · {Theme.money(contract.payout)} on delivery`
+		activeTitle.Text = `Meet the contact at {contract.pickupName}`
+		local code = if activePasscode then `Code: {activePasscode} · ` else ""
+		activeBody.Text = `{code}{distanceTo(pointPosition(contract.pickupName, Config.Tags.Pickup))} away · {Theme.money(contract.payout)} on delivery`
 		activeTitle.TextColor3 = C.Pickup
 	end
 end
@@ -283,22 +306,24 @@ end
 -- Contract updates
 ---------------------------------------------------------------------------------------------------
 
-local function onContractUpdated(status: Types.JobStatus, contract: Types.Contract?)
+local function onContractUpdated(status: Types.JobStatus, contract: Types.Contract?, details: Types.ContractDetails?)
 	if not contract then
 		return
 	end
 	if status == "accepted" then
 		activeContract, activeStage = contract, "accepted"
-		HudController.setObjective(`Pick up the cargo at {contract.pickupName}`, "pickup")
+		activePasscode = if details and typeof(details.passcode) == "string" then details.passcode else nil
+		local code = if activePasscode then ` · code "{activePasscode}"` else ""
+		HudController.setObjective(`Meet the contact at {contract.pickupName}{code}`, "pickup")
 		GpsApp.setDestination(pointPosition(contract.pickupName, Config.Tags.Pickup), contract.pickupName, C.Pickup)
-		HudController.toast("pickup", "Contract accepted", `{contract.syndicate} · pick up at {contract.pickupName}`)
+		HudController.toast("pickup", "Contract accepted", `Meet the contact at {contract.pickupName}{code}`, 8)
 	elseif status == "pickedUp" then
 		activeStage = "pickedUp"
 		HudController.setObjective(`Deliver to {contract.dropoffName}. Keep a low profile.`, "dropoff")
 		GpsApp.setDestination(pointPosition(contract.dropoffName, Config.Tags.Dropoff), contract.dropoffName, C.Dropoff)
 		HudController.toast("dropoff", "Cargo loaded", `Deliver to {contract.dropoffName} · route on your GPS`)
 	else
-		activeContract, activeStage = nil, nil
+		activeContract, activeStage, activePasscode = nil, nil, nil
 		HudController.setObjective("")
 		GpsApp.setDestination(nil)
 		if status == "delivered" then

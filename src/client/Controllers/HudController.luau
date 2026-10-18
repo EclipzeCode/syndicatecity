@@ -1,10 +1,11 @@
 --!strict
--- On-screen HUD: dirty cash, heat, wanted/bust state, objective, ammo, big center banners and
--- toast notifications. Reads Player attributes set by the server (DirtyCash, Heat, Wanted,
--- BustProgress, Reloading) and the equipped pistol's Ammo attribute. Driving info lives in
+-- On-screen HUD: dirty cash, heat, police attention, wanted/bust state, objective, ammo, big
+-- center banners and toast notifications. Reads Player attributes set by the server (DirtyCash,
+-- Heat, PoliceAttention, Wanted, BustProgress, Reloading) and the equipped pistol's Ammo attribute. Driving info lives in
 -- CarHudController and navigation in the phone's GPS app; nothing marks the world on screen.
 
 local Players = game:GetService("Players")
+local SoundService = game:GetService("SoundService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 local TweenService = game:GetService("TweenService")
@@ -44,6 +45,27 @@ local NOTICES: { [string]: { banner: string, color: Color3, toast: string } } = 
 	wanted = { banner = "WANTED", color = C.Wanted, toast = "danger" },
 	ko = { banner = "KNOCKED OUT", color = C.Text, toast = "danger" },
 }
+
+-- Quieter server notices: a toast only, no banner.
+local QUIET_NOTICES: { [string]: { toast: string, title: string } } = {
+	tailed = { toast = "police", title = "You're being followed" },
+	clear = { toast = "info", title = "Tail's gone" },
+}
+
+-- An optional radio chirp when a patrol starts tailing you (Config.Police.Detection.RadioSoundId).
+local function playRadio()
+	local id = Config.Police.Detection.RadioSoundId
+	if id == "" then
+		return
+	end
+	local sound = Instance.new("Sound")
+	sound.SoundId = id
+	sound.Volume = 0.5
+	SoundService:PlayLocalSound(sound)
+	task.delay(5, function()
+		sound:Destroy()
+	end)
+end
 
 ---------------------------------------------------------------------------------------------------
 -- Toasts
@@ -173,7 +195,13 @@ end
 
 local function onNotice(kind: string, text: string)
 	local notice = NOTICES[kind]
-	if notice then
+	local quiet = QUIET_NOTICES[kind]
+	if quiet then
+		HudController.toast(quiet.toast, quiet.title, text, 5)
+		if kind == "tailed" then
+			playRadio()
+		end
+	elseif notice then
 		HudController.showBanner(notice.banner, notice.color)
 		-- server texts lead with the headline ("BUSTED! Fined $200…"); the toast title has it already
 		local lead, rest = string.match(text, "^([^!]+)!%s*(.+)$")
@@ -227,7 +255,18 @@ function HudController.init()
 	local heatValue = Theme.caption("", { Size = UDim2.new(0.5, 0, 0, 14), Position = UDim2.fromScale(0.5, 0), TextXAlignment = Enum.TextXAlignment.Right, Parent = heatRow })
 	local _, heatFill = Theme.bar({ Size = UDim2.new(1, 0, 0, 8), Position = UDim2.fromOffset(0, 18), Parent = heatRow }, C.HeatLow)
 
-	local wantedRow = Theme.new("Frame", { BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 44), LayoutOrder = 3, Visible = false, Parent = status })
+	-- a police car is tailing you: a quiet blue chip, no numbers
+	local tailRow = Theme.new("Frame", { BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 20), LayoutOrder = 3, Visible = false, Parent = status })
+	local tailChip = Theme.new("Frame", {
+		BackgroundColor3 = C.Police,
+		BorderSizePixel = 0,
+		Size = UDim2.fromOffset(92, 20),
+		Parent = tailRow,
+	}, { Theme.corner(10) })
+	Theme.label({ Text = "◉ TAILED", Font = F.Heavy, TextSize = 12, TextXAlignment = Enum.TextXAlignment.Center, Size = UDim2.fromScale(1, 1), Parent = tailChip })
+	Theme.caption("Drive clean", { Size = UDim2.new(1, -100, 0, 20), Position = UDim2.fromOffset(100, 0), Parent = tailRow })
+
+	local wantedRow = Theme.new("Frame", { BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 44), LayoutOrder = 4, Visible = false, Parent = status })
 	local wantedChip = Theme.new("Frame", {
 		BackgroundColor3 = C.Wanted,
 		BorderSizePixel = 0,
@@ -316,6 +355,7 @@ function HudController.init()
 		local heat = (player:GetAttribute("Heat") :: number?) or 0
 		local bust = (player:GetAttribute("BustProgress") :: number?) or 0
 		local wanted = player:GetAttribute("Wanted") == true
+		local attention = (player:GetAttribute("PoliceAttention") :: string?) or ""
 		local heatFraction = math.clamp(heat / Config.Heat.Max, 0, 1)
 		cashLabel.Text = Theme.money(cash)
 		heatValue.Text = `{math.floor(heatFraction * 100)}%`
@@ -324,11 +364,13 @@ function HudController.init()
 			BackgroundColor3 = C.HeatLow:Lerp(C.HeatHigh, heatFraction),
 		}):Play()
 		wantedRow.Visible = wanted
+		tailRow.Visible = attention == "tailed" and not wanted
 		bustFill.Size = UDim2.fromScale(math.clamp(bust, 0, 1), 1)
-		statusStroke.Color = if wanted then C.Wanted else C.Outline
-		statusStroke.Transparency = if wanted then 0.3 else 0.9
+		-- the panel's outline is the subtle tell: blue while a patrol has an eye on you
+		statusStroke.Color = if wanted then C.Wanted elseif attention ~= "" then C.Police else C.Outline
+		statusStroke.Transparency = if wanted then 0.3 elseif attention == "tailed" then 0.35 elseif attention == "watched" then 0.65 else 0.9
 	end
-	for _, attribute in { "DirtyCash", "Heat", "Wanted", "BustProgress" } do
+	for _, attribute in { "DirtyCash", "Heat", "Wanted", "BustProgress", "PoliceAttention" } do
 		player:GetAttributeChangedSignal(attribute):Connect(refresh)
 	end
 	refresh()

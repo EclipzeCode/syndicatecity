@@ -8,15 +8,18 @@ local RunService = game:GetService("RunService")
 local FUNCTIONS = {
 	"GetContracts", -- () -> { Contract }
 	"AcceptContract", -- (contractId: string) -> (ok: boolean, err: string?)
+	"AnswerContact", -- (choice: number) -> { ok: boolean, line: string, done: boolean }?  pickup contact dialogue
 }
 
 local EVENTS = {
-	"ContractUpdated", -- server -> client: (status: JobStatus, contract: Contract?)
+	"ContractUpdated", -- server -> client: (status: JobStatus, contract: Contract?, details: ContractDetails?)
 	"Notice", -- server -> client: (kind: string, text: string) big center-screen banner
 	"FireWeapon", -- client -> server: (target: Vector3)
 	"ReloadWeapon", -- client -> server: ()
 	"ShotFired", -- server -> all clients: (origin: Vector3, hit: Vector3, hitCharacter: boolean)
 	"ToggleHeadlights", -- client -> server: () driver flips their car's headlights
+	"ContactDialogue", -- server -> client: ("open", { contact, line, options }) | ("close", reason: string?)
+	"CloseContact", -- client -> server: () the player closed the contact dialogue
 }
 
 local folder: Instance

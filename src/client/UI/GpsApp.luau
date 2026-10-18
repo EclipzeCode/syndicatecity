@@ -21,20 +21,23 @@ local SCALE = 0.5
 local ZOOM_ON_FOOT = 0.75
 local ZOOM_DRIVING = 0.45
 local LIMIT_MPH = math.floor(Config.Heat.SpeedingThreshold * Config.Vehicles.MphPerStud + 0.5)
-local ROAD_WIDTH = { street = 36, highway = 56, dirt = 28 }
+local ROAD_WIDTH = { street = 36, wide = 48, highway = 56, dirt = 28 }
 local MAP_COLORS = {
 	water = Color3.fromRGB(22, 40, 62),
 	land = Color3.fromRGB(26, 30, 36),
 	block = Color3.fromRGB(42, 46, 56),
 	park = Color3.fromRGB(34, 62, 46),
+	field = Color3.fromRGB(44, 52, 38),
 	lot = Color3.fromRGB(36, 39, 48),
 	quay = Color3.fromRGB(48, 52, 62),
 	pier = Color3.fromRGB(70, 58, 46),
 	street = Color3.fromRGB(86, 92, 108),
+	wide = Color3.fromRGB(96, 100, 114),
 	highway = Color3.fromRGB(118, 124, 142),
 	dirt = Color3.fromRGB(104, 86, 66),
 }
--- map parts drawn under the roads, by name
+-- map parts drawn under the roads, by name; only used when the map has no GpsAreas folder
+-- (MapBuilder writes one so the GPS works while the place streams parts in and out)
 local AREAS: { [string]: string } = {
 	Grass = "land",
 	Sidewalk = "block",
@@ -43,10 +46,13 @@ local AREAS: { [string]: string } = {
 	MotelLot = "lot",
 	GasLot = "lot",
 	RestStopLot = "lot",
+	Runway = "lot",
+	Field = "field",
 	Quay = "quay",
 	Pier = "pier",
 }
 
+type Area = { name: string, kind: string, position: Vector3, size: Vector2, yaw: number }
 type GraphNode = { id: string, position: Vector3, links: { string }, kinds: { string } }
 
 local nodes: { [string]: GraphNode } = {}
@@ -146,26 +152,38 @@ local function buildMap()
 	end
 	mapBuilt = true
 	-- areas, biggest first so blocks and lots land on top of the ground
-	local areas = {}
-	for _, part in map:GetDescendants() do
-		if part:IsA("BasePart") and AREAS[part.Name] then
-			table.insert(areas, part)
+	local areas: { Area } = {}
+	local published = map:FindFirstChild("GpsAreas")
+	if published then
+		for _, value in published:GetChildren() do
+			local kind = value:GetAttribute("Kind")
+			local size = value:GetAttribute("Size")
+			if value:IsA("Vector3Value") and typeof(kind) == "string" and MAP_COLORS[kind] and typeof(size) == "Vector2" then
+				local yaw = value:GetAttribute("Yaw")
+				table.insert(areas, { name = value.Name, kind = kind, position = value.Value, size = size, yaw = if typeof(yaw) == "number" then yaw else 0 })
+			end
+		end
+	else
+		for _, part in map:GetDescendants() do
+			if part:IsA("BasePart") and AREAS[part.Name] then
+				local _, yaw, _ = part.CFrame:ToOrientation()
+				table.insert(areas, { name = part.Name, kind = AREAS[part.Name], position = part.Position, size = Vector2.new(part.Size.X, part.Size.Z), yaw = yaw })
+			end
 		end
 	end
 	table.sort(areas, function(a, b)
-		return a.Size.X * a.Size.Z > b.Size.X * b.Size.Z
+		return a.size.X * a.size.Y > b.size.X * b.size.Y
 	end)
-	for _, part in areas do
-		local _, yaw, _ = part.CFrame:ToOrientation()
+	for _, area in areas do
 		Theme.new("Frame", {
-			BackgroundColor3 = MAP_COLORS[AREAS[part.Name]],
+			BackgroundColor3 = MAP_COLORS[area.kind],
 			BorderSizePixel = 0,
 			AnchorPoint = Vector2.new(0.5, 0.5),
-			Position = toMap(part.Position),
-			Size = UDim2.fromOffset(part.Size.X * SCALE, part.Size.Z * SCALE),
-			Rotation = -math.deg(yaw),
+			Position = toMap(area.position),
+			Size = UDim2.fromOffset(area.size.X * SCALE, area.size.Y * SCALE),
+			Rotation = -math.deg(area.yaw),
 			Parent = roadLayer,
-		}, { Theme.corner(if part.Name == "Grass" then 0 else 3) })
+		}, { Theme.corner(if area.name == "Grass" then 0 else 3) })
 	end
 	-- roads: wide ones first so highways sit on top of the streets that meet them
 	table.sort(edgeList, function(a, b)

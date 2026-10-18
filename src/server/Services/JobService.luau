@@ -2,6 +2,11 @@
 -- Contract board and the pickup -> dropoff job loop.
 -- Pickup and dropoff points are any BaseParts tagged with Config.Tags.Pickup / Config.Tags.Dropoff;
 -- each part's Name is shown to players, so give them unique, readable names.
+--
+-- Contracts are sorted into tiers (Config.Jobs.Tiers) by the estimated drive between their pickup
+-- and dropoff along the road graph, so the board mixes short runs with long hauls. At the pickup,
+-- a contact (Jobs/Handoff) checks the player's code before loading the cargo; at the dropoff the
+-- player hands it over with a prompt as before.
 
 local CollectionService = game:GetService("CollectionService")
 local HttpService = game:GetService("HttpService")
@@ -11,6 +16,8 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Config = require(ReplicatedStorage.Shared.Config)
 local Remotes = require(ReplicatedStorage.Shared.Remotes)
 local Types = require(ReplicatedStorage.Shared.Types)
+local RoadGraph = require(script.Parent.Parent.Navigation.RoadGraph)
+local Handoff = require(script.Parent.Parent.Jobs.Handoff)
 local HeatService = require(script.Parent.HeatService)
 local PlayerDataService = require(script.Parent.PlayerDataService)
 
@@ -19,6 +26,9 @@ type ActiveJob = {
 	contract: Contract,
 	hasCargo: boolean,
 }
+type Tier = typeof(Config.Jobs.Tiers[1])
+-- a pickup/dropoff pairing and its estimated drive
+type Route = { pickup: BasePart, dropoff: BasePart, seconds: number }
 
 local JobService = {}
 
@@ -26,12 +36,13 @@ local board: { Contract } = {}
 local activeJobs: { [Player]: ActiveJob } = {}
 local pickups: { BasePart } = {}
 local dropoffs: { BasePart } = {}
+local routesByTier: { [string]: { Route } } = {}
 local rng = Random.new()
 
 local contractUpdated = Remotes.event("ContractUpdated")
 
-local function notify(player: Player, status: Types.JobStatus, contract: Contract?)
-	contractUpdated:FireClient(player, status, contract)
+local function notify(player: Player, status: Types.JobStatus, contract: Contract?, details: Types.ContractDetails?)
+	contractUpdated:FireClient(player, status, contract, details)
 end
 
 local function collectTagged(tag: string): { BasePart }
@@ -60,18 +71,71 @@ local function spawnTestPoints()
 	make("Test Dropoff", Config.Tags.Dropoff, Vector3.new(200, 0.5, 40), Color3.fromRGB(0, 190, 255))
 end
 
+-- Estimates every pickup -> dropoff drive and files it under its tier.
+local function sortRoutes()
+	local hasGraph = RoadGraph.load()
+	table.clear(routesByTier)
+	for _, pickup in pickups do
+		for _, dropoff in dropoffs do
+			local seconds = if hasGraph
+				then RoadGraph.routeTime(pickup.Position, dropoff.Position, Config.Jobs.RouteSpeeds)
+				else (dropoff.Position - pickup.Position).Magnitude / Config.Jobs.RouteSpeeds.street
+			for _, tier in Config.Jobs.Tiers do
+				if seconds <= tier.MaxSeconds then
+					routesByTier[tier.Name] = routesByTier[tier.Name] or {}
+					table.insert(routesByTier[tier.Name], { pickup = pickup, dropoff = dropoff, seconds = seconds })
+					break
+				end
+			end
+		end
+	end
+end
+
+local function pickTier(): Tier?
+	-- a tier missing from the board goes first, so there's always a short and a long option
+	local onBoard: { [string]: boolean } = {}
+	for _, contract in board do
+		if contract.tier then
+			onBoard[contract.tier] = true
+		end
+	end
+	local available, total = {}, 0
+	for _, tier in Config.Jobs.Tiers do
+		if routesByTier[tier.Name] and #routesByTier[tier.Name] > 0 then
+			if not onBoard[tier.Name] then
+				return tier
+			end
+			table.insert(available, tier)
+			total += tier.Weight
+		end
+	end
+	local roll = rng:NextNumber() * total
+	for _, tier in available do
+		roll -= tier.Weight
+		if roll <= 0 then
+			return tier
+		end
+	end
+	return available[1]
+end
+
 local function generateContract(): Contract?
-	if #pickups == 0 or #dropoffs == 0 then
+	local tier = pickTier()
+	if not tier then
 		return nil
 	end
-	local pickup = pickups[rng:NextInteger(1, #pickups)]
-	local dropoff = dropoffs[rng:NextInteger(1, #dropoffs)]
+	local routes = routesByTier[tier.Name]
+	local route = routes[rng:NextInteger(1, #routes)]
 	return {
 		id = HttpService:GenerateGUID(false),
 		syndicate = Config.Syndicates[rng:NextInteger(1, #Config.Syndicates)],
-		pickupName = pickup.Name,
-		dropoffName = dropoff.Name,
-		payout = rng:NextInteger(Config.Jobs.MinPayout, Config.Jobs.MaxPayout),
+		pickupName = route.pickup.Name,
+		dropoffName = route.dropoff.Name,
+		payout = rng:NextInteger(tier.Payout[1], tier.Payout[2]),
+		tier = tier.Name,
+		cargo = tier.Cargo[rng:NextInteger(1, #tier.Cargo)],
+		risk = tier.Risk,
+		routeSeconds = math.floor(route.seconds + 0.5),
 	}
 end
 
@@ -94,7 +158,6 @@ local function isWithinReach(player: Player, part: BasePart): boolean
 end
 
 local function setCargo(player: Player, value: boolean)
-	HeatService.setCarryingCargo(player, value)
 	player:SetAttribute("HasCargo", value)
 end
 
@@ -104,6 +167,7 @@ local function failJob(player: Player, status: Types.JobStatus)
 		return
 	end
 	activeJobs[player] = nil
+	Handoff.release(player)
 	setCargo(player, false)
 	notify(player, status, job.contract)
 end
@@ -111,6 +175,15 @@ end
 -- Arrest: the police confiscate the cargo and the contract is over.
 function JobService.bust(player: Player)
 	failJob(player, "busted")
+end
+
+-- How much police attention the player's cargo draws (0 when they aren't carrying any).
+function JobService.getCargoRisk(player: Player): number
+	local job = activeJobs[player]
+	if not job or not job.hasCargo then
+		return 0
+	end
+	return job.contract.risk or 1
 end
 
 local function onAccept(player: Player, contractId: unknown): (boolean, string?)
@@ -124,21 +197,31 @@ local function onAccept(player: Player, contractId: unknown): (boolean, string?)
 		if contract.id == contractId then
 			table.remove(board, index)
 			activeJobs[player] = { contract = contract, hasCargo = false }
-			notify(player, "accepted", contract)
+			local passcode = Handoff.prepare(player, contract)
+			notify(player, "accepted", contract, { passcode = passcode })
 			return true, nil
 		end
 	end
 	return false, "That contract is no longer available"
 end
 
-local function onPickup(player: Player, part: BasePart)
+-- Handoff callbacks: the contact may hand over cargo only for the player's current contract,
+-- once. Both are checked again on every request.
+local function canPickUp(player: Player, contractId: string): boolean
 	local job = activeJobs[player]
-	if not job or job.hasCargo or job.contract.pickupName ~= part.Name or not isWithinReach(player, part) then
-		return
+	return job ~= nil and job.contract.id == contractId and not job.hasCargo
+end
+
+local function loadCargo(player: Player, contractId: string): boolean
+	if not canPickUp(player, contractId) then
+		return false
 	end
+	local job = activeJobs[player] :: ActiveJob
 	job.hasCargo = true
 	setCargo(player, true)
+	Handoff.release(player, Config.Jobs.Contact.LingerSeconds)
 	notify(player, "pickedUp", job.contract)
+	return true
 end
 
 local function onDropoff(player: Player, part: BasePart)
@@ -195,10 +278,9 @@ function JobService.init()
 	if #pickups == 0 or #dropoffs == 0 then
 		warn("[JobService] No pickup or dropoff points tagged; the contract board will stay empty")
 	end
+	sortRoutes()
 
-	for _, part in pickups do
-		addPrompt(part, "Load cargo", onPickup)
-	end
+	Handoff.init(pickups, { canPickUp = canPickUp, loadCargo = loadCargo })
 	for _, part in dropoffs do
 		addPrompt(part, "Deliver cargo", onDropoff)
 	end
@@ -228,6 +310,36 @@ function JobService.init()
 			refillBoard()
 		end
 	end)
+end
+
+-- Studio test hooks (see Tools.ServerTests).
+function JobService.debugAccept(player: Player, contractId: string?): (boolean, string?)
+	return onAccept(player, contractId or (board[1] and board[1].id))
+end
+
+function JobService.debugActive(player: Player): (Contract?, boolean)
+	local job = activeJobs[player]
+	return if job then job.contract else nil, job ~= nil and job.hasCargo
+end
+
+function JobService.debugBoard(): { Contract }
+	return board
+end
+
+function JobService.debugDropoff(player: Player)
+	local job = activeJobs[player]
+	if not job then
+		return
+	end
+	for _, part in dropoffs do
+		if part.Name == job.contract.dropoffName then
+			onDropoff(player, part)
+		end
+	end
+end
+
+function JobService.debugFail(player: Player)
+	failJob(player, "failed")
 end
 
 return JobService

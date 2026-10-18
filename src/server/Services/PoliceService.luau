@@ -1,8 +1,16 @@
 --!strict
--- Police AI. Patrol cars cruise the road graph (Workspace.Map.RoadGraph). When a player becomes
--- wanted, the nearest cops switch on their sirens and chase: straight at the player while they can
--- see them, along the road graph when they can't. A cop that stays close to a slow or stopped player
--- busts them. Cops shoot only at wanted players on foot, and can be disabled by shooting their car.
+-- Police AI. Patrol cars work district beats on the road graph (Workspace.Map.RoadGraph) and
+-- keep an eye on the players around them. Each car runs a small state machine (see
+-- Police/Suspicion): it notices suspicious behavior it can actually see (speeding, cargo up
+-- close), builds suspicion while that lasts, tails the player if it gets suspicious enough, and
+-- calls a pursuit if the player keeps it up. Driving clean lets suspicion decay and the patrol
+-- goes back to its beat.
+--
+-- Pursuits are the wanted state: when a player becomes wanted (from a patrol escalating, or heat
+-- from anything else), the nearest cops switch on their sirens and chase: straight at the player
+-- while they can see them, along the road graph when they can't. A cop that stays close to a slow
+-- or stopped player busts them. Cops shoot only at wanted players on foot, and can be disabled by
+-- shooting their car.
 
 local CollectionService = game:GetService("CollectionService")
 local Players = game:GetService("Players")
@@ -12,6 +20,8 @@ local RunService = game:GetService("RunService")
 local Config = require(ReplicatedStorage.Shared.Config)
 local Palette = require(ReplicatedStorage.Shared.Palette)
 local Remotes = require(ReplicatedStorage.Shared.Remotes)
+local RoadGraph = require(script.Parent.Parent.Navigation.RoadGraph)
+local Suspicion = require(script.Parent.Parent.Police.Suspicion)
 local CombatService = require(script.Parent.CombatService)
 local HeatService = require(script.Parent.HeatService)
 local JobService = require(script.Parent.JobService)
@@ -19,107 +29,67 @@ local PlayerDataService = require(script.Parent.PlayerDataService)
 local VehicleService = require(script.Parent.VehicleService)
 
 local POLICE = Config.Police
+local DETECT = POLICE.Detection
 local TUNING = Config.Vehicles.Types.Police
 local LANE_OFFSET = 9
 local ARRIVE_DISTANCE = 22
+local IS_STUDIO = RunService:IsStudio()
 
-type Node = { id: string, position: Vector3, links: { string } }
+local SUSPICION: Suspicion.Config = {
+	SpeedingPerSecond = DETECT.SpeedingPerSecond,
+	SpeedingFullOver = Config.Heat.SpeedingFullOver,
+	CargoPerSecond = DETECT.CargoPerSecond,
+	CargoSuspicionCap = DETECT.CargoSuspicionCap,
+	HeatMultiplier = DETECT.HeatMultiplier,
+	DecayPerSecond = DETECT.DecayPerSecond,
+	InvestigateThreshold = DETECT.InvestigateThreshold,
+	PursuitThreshold = DETECT.PursuitThreshold,
+	ClearThreshold = DETECT.ClearThreshold,
+	LoseSightSeconds = DETECT.LoseSightSeconds,
+	InvestigateMaxSeconds = DETECT.InvestigateMaxSeconds,
+}
+local NOTHING_SEEN: Suspicion.Observation = { speedOver = 0, cargoRisk = 0, heat = 0 }
 
 type Cop = {
 	car: Model,
 	chassis: BasePart,
 	from: string?,
 	to: string,
+	-- the district this car patrols; nil for backup cars called in for a pursuit
+	beat: string?,
+	state: Suspicion.State,
+	stateSince: number,
+	-- the player being pursued (Pursuing)
 	target: Player?,
+	-- the player being observed or investigated, how suspicious they look, and when last seen
+	watch: Player?,
+	suspicion: number,
+	lastSeen: number,
+	-- players this car leaves alone until the given time (after an encounter)
+	ignoreUntil: { [Player]: number },
 	path: { string },
 	nextPathTime: number,
 	health: number,
 	disabledUntil: number,
 	stuckTime: number,
 	reverseUntil: number,
+	reverses: { number },
+	needsRespawn: boolean,
 	lastShot: number,
 	sees: boolean,
 }
 
 local PoliceService = {}
 
-local graph: { [string]: Node } = {}
-local nodeIds: { string } = {}
+local nodes = RoadGraph.nodes
 local cops: { Cop } = {}
+local beatCenters: { [string]: Vector3 } = {}
 local bustProgress: { [Player]: number } = {}
 local releaseOnSpawn: { [Player]: boolean } = {}
+local attention: { [Player]: string } = {}
 local rng = Random.new()
 
 local notice = Remotes.event("Notice")
-
----------------------------------------------------------------------------------------------------
--- Road graph
----------------------------------------------------------------------------------------------------
-
-local function loadGraph(): boolean
-	local map = workspace:FindFirstChild("Map")
-	local folder = map and map:FindFirstChild("RoadGraph")
-	if not folder then
-		return false
-	end
-	for _, value in folder:GetChildren() do
-		if value:IsA("Vector3Value") then
-			local links = string.split((value:GetAttribute("Links") :: string?) or "", ",")
-			graph[value.Name] = { id = value.Name, position = value.Value, links = links }
-			table.insert(nodeIds, value.Name)
-		end
-	end
-	return #nodeIds > 0
-end
-
-local function nearestNode(position: Vector3): string
-	local best, bestDistance = nodeIds[1], math.huge
-	for id, node in graph do
-		local d = (node.position - position).Magnitude
-		if d < bestDistance then
-			best, bestDistance = id, d
-		end
-	end
-	return best
-end
-
--- Dijkstra over ~50 nodes; cheap enough to rerun every second per pursuer.
-local function findPath(fromId: string, toId: string): { string }
-	local dist: { [string]: number } = { [fromId] = 0 }
-	local prev: { [string]: string } = {}
-	local open: { [string]: boolean } = { [fromId] = true }
-	while next(open) do
-		local current, best = nil :: string?, math.huge
-		for id in open do
-			if dist[id] < best then
-				current, best = id, dist[id]
-			end
-		end
-		local cur = current :: string
-		open[cur] = nil
-		if cur == toId then
-			break
-		end
-		for _, linkId in graph[cur].links do
-			local link = graph[linkId]
-			if link then
-				local alt = dist[cur] + (link.position - graph[cur].position).Magnitude
-				if alt < (dist[linkId] or math.huge) then
-					dist[linkId] = alt
-					prev[linkId] = cur
-					open[linkId] = true
-				end
-			end
-		end
-	end
-	local path = {}
-	local step: string? = toId
-	while step and step ~= fromId do
-		table.insert(path, 1, step)
-		step = prev[step]
-	end
-	return path
-end
 
 -- Aim for the right-hand lane of the road between two nodes.
 local function laneTarget(fromPos: Vector3, toPos: Vector3): Vector3
@@ -131,6 +101,12 @@ local function laneTarget(fromPos: Vector3, toPos: Vector3): Vector3
 	return toPos + right * LANE_OFFSET
 end
 
+local function rootOf(player: Player): BasePart?
+	local character = player.Character
+	local root = character and character:FindFirstChild("HumanoidRootPart")
+	return if root and root:IsA("BasePart") then root else nil
+end
+
 ---------------------------------------------------------------------------------------------------
 -- Cops
 ---------------------------------------------------------------------------------------------------
@@ -139,16 +115,24 @@ local function setSiren(cop: Cop, on: boolean)
 	cop.car:SetAttribute("Siren", on)
 end
 
-local function spawnCop(nodeId: string): Cop
-	local node = graph[nodeId]
+-- The state is on the car as an attribute so it's easy to watch in Studio while debugging.
+local function setState(cop: Cop, state: Suspicion.State)
+	cop.state = state
+	cop.stateSince = os.clock()
+	cop.car:SetAttribute("PoliceState", state)
+end
+
+local function spawnCop(nodeId: string, beat: string?): Cop
+	local node = nodes[nodeId]
 	local nextId = node.links[rng:NextInteger(1, #node.links)]
-	local nextPos = graph[nextId].position
+	local nextPos = nodes[nextId].position
 	local start = laneTarget(nextPos, node.position)
 	local cframe = CFrame.lookAt(start + Vector3.new(0, 4, 0), laneTarget(node.position, nextPos) + Vector3.new(0, 4, 0))
 	local car = VehicleService.spawn("Police", Palette.PoliceWhite, cframe)
 	local chassis = car.PrimaryPart :: BasePart
 	CollectionService:AddTag(chassis, Config.Tags.Patrol)
 	car:SetAttribute("Siren", false)
+	car:SetAttribute("Beat", beat or "Backup")
 
 	local smoke = Instance.new("Smoke")
 	smoke.Name = "DisabledSmoke"
@@ -164,16 +148,26 @@ local function spawnCop(nodeId: string): Cop
 		chassis = chassis,
 		from = nodeId,
 		to = nextId,
+		beat = beat,
+		state = "Patrolling",
+		stateSince = os.clock(),
 		target = nil,
+		watch = nil,
+		suspicion = 0,
+		lastSeen = 0,
+		ignoreUntil = {},
 		path = {},
 		nextPathTime = 0,
 		health = POLICE.CarHealth,
 		disabledUntil = 0,
 		stuckTime = 0,
 		reverseUntil = 0,
+		reverses = {},
+		needsRespawn = false,
 		lastShot = 0,
 		sees = false,
 	}
+	setState(cop, "Patrolling")
 	table.insert(cops, cop)
 	return cop
 end
@@ -186,10 +180,27 @@ local function removeCop(cop: Cop)
 	cop.car:Destroy()
 end
 
-local function rootOf(player: Player): BasePart?
-	local character = player.Character
-	local root = character and character:FindFirstChild("HumanoidRootPart")
-	return if root and root:IsA("BasePart") then root else nil
+-- A road node for a new car: in `district` if given, out of sight of every player when possible.
+local function spawnNode(district: string?): string
+	local inDistrict, hidden = {}, {}
+	for _, id in RoadGraph.ids do
+		if district == nil or nodes[id].district == district then
+			table.insert(inDistrict, id)
+			local far = true
+			for _, player in Players:GetPlayers() do
+				local root = rootOf(player)
+				if root and (root.Position - nodes[id].position).Magnitude < 250 then
+					far = false
+					break
+				end
+			end
+			if far then
+				table.insert(hidden, id)
+			end
+		end
+	end
+	local pool = if #hidden > 0 then hidden elseif #inDistrict > 0 then inDistrict else RoadGraph.ids
+	return pool[rng:NextInteger(1, #pool)]
 end
 
 local function hasLineOfSight(cop: Cop, root: BasePart): boolean
@@ -210,12 +221,43 @@ local function hasLineOfSight(cop: Cop, root: BasePart): boolean
 	return workspace:Raycast(origin, root.Position - origin, params) == nil
 end
 
-local function returnToPatrol(cop: Cop)
-	cop.target = nil
+-- Back to the nearest road node, then on along its beat.
+local function returnToRoute(cop: Cop)
 	cop.path = {}
 	cop.from = nil
-	cop.to = nearestNode(cop.chassis.Position)
+	cop.to = RoadGraph.nearest(cop.chassis.Position)
+	setState(cop, "Returning")
+end
+
+-- Ends the car's observation or investigation. The player gets a breather from this car.
+local function endEncounter(cop: Cop, nextState: Suspicion.State)
+	local player = cop.watch
+	if player then
+		cop.ignoreUntil[player] = os.clock() + DETECT.CooldownSeconds
+	end
+	cop.watch = nil
+	cop.suspicion = 0
+	if IS_STUDIO then
+		cop.car:SetAttribute("Suspicion", nil)
+	end
+	if nextState == "Returning" then
+		returnToRoute(cop)
+	else
+		setState(cop, nextState)
+	end
+end
+
+local function returnToPatrol(cop: Cop)
+	if cop.target then
+		cop.ignoreUntil[cop.target] = os.clock() + DETECT.CooldownSeconds
+	end
+	cop.target = nil
 	setSiren(cop, false)
+	if cop.watch then
+		endEncounter(cop, "Returning")
+	else
+		returnToRoute(cop)
+	end
 end
 
 local function pursuersOf(player: Player): number
@@ -226,6 +268,18 @@ local function pursuersOf(player: Player): number
 		end
 	end
 	return count
+end
+
+local function startPursuit(cop: Cop, player: Player)
+	if cop.watch then
+		-- quietly drop whatever else it was looking at
+		cop.watch = nil
+		cop.suspicion = 0
+	end
+	cop.target = player
+	cop.nextPathTime = 0
+	setSiren(cop, true)
+	setState(cop, "Pursuing")
 end
 
 local function assignPursuers(player: Player)
@@ -244,30 +298,33 @@ local function assignPursuers(player: Player)
 			table.insert(free, cop)
 		end
 	end
+	-- the car that was already investigating this player goes first, then the nearest
 	table.sort(free, function(a, b)
+		if (a.watch == player) ~= (b.watch == player) then
+			return a.watch == player
+		end
 		return (a.chassis.Position - root.Position).Magnitude < (b.chassis.Position - root.Position).Magnitude
 	end)
 	for i = 1, math.min(needed, #free) do
-		free[i].target = player
-		free[i].nextPathTime = 0
-		setSiren(free[i], true)
+		startPursuit(free[i], player)
 	end
 	needed -= #free
 	-- call in backup from a road node out of sight
 	while needed > 0 and #cops < POLICE.MaxCops do
-		local candidates = {}
-		for _, id in nodeIds do
-			local d = (graph[id].position - root.Position).Magnitude
+		local candidates, fallback, fallbackDistance = {}, nil, math.huge
+		for _, id in RoadGraph.ids do
+			local d = (nodes[id].position - root.Position).Magnitude
 			if d > 250 and d < 550 then
 				table.insert(candidates, id)
+			elseif d >= 550 and d < fallbackDistance then
+				fallback, fallbackDistance = id, d
 			end
 		end
-		if #candidates == 0 then
+		local nodeId = if #candidates > 0 then candidates[rng:NextInteger(1, #candidates)] else fallback
+		if not nodeId then
 			break
 		end
-		local cop = spawnCop(candidates[rng:NextInteger(1, #candidates)])
-		cop.target = player
-		setSiren(cop, true)
+		startPursuit(spawnCop(nodeId, nil), player)
 		needed -= 1
 	end
 end
@@ -280,6 +337,16 @@ local function releasePursuers(player: Player)
 	end
 	bustProgress[player] = nil
 	player:SetAttribute("BustProgress", 0)
+end
+
+-- Drops every observation and investigation of a player (they left, or were arrested).
+local function forgetPlayer(player: Player)
+	for _, cop in cops do
+		if cop.watch == player then
+			endEncounter(cop, if cop.state == "Investigating" then "Returning" else "Patrolling")
+		end
+		cop.ignoreUntil[player] = nil
+	end
 end
 
 ---------------------------------------------------------------------------------------------------
@@ -297,6 +364,7 @@ end
 
 function PoliceService.bust(player: Player, knockedOut: boolean?)
 	releasePursuers(player)
+	forgetPlayer(player)
 	HeatService.clear(player)
 	JobService.bust(player)
 	VehicleService.impound(player)
@@ -328,6 +396,148 @@ function PoliceService.bust(player: Player, knockedOut: boolean?)
 end
 
 ---------------------------------------------------------------------------------------------------
+-- Detection
+---------------------------------------------------------------------------------------------------
+
+-- What `cop` can see of `player` right now, or nil if it can't see them. Line of sight is only
+-- checked when `needSight` (the player is being watched) or there is something to see.
+local function observe(cop: Cop, player: Player, needSight: boolean): Suspicion.Observation?
+	local root = rootOf(player)
+	if not root then
+		return nil
+	end
+	local distance = (root.Position - cop.chassis.Position).Magnitude
+	if distance > DETECT.Range then
+		return nil
+	end
+	local risk = JobService.getCargoRisk(player)
+	local obs: Suspicion.Observation = {
+		speedOver = HeatService.getSpeedOver(player),
+		cargoRisk = if risk > 0 and distance <= DETECT.CargoRange * math.max(risk, 1) then risk else 0,
+		heat = HeatService.getHeat(player) / Config.Heat.Max,
+	}
+	if not needSight and not Suspicion.isSuspicious(obs, SUSPICION) then
+		return nil
+	end
+	-- rays are the expensive part, so they come last
+	if DETECT.RequireLineOfSight and not hasLineOfSight(cop, root) then
+		return nil
+	end
+	return obs
+end
+
+-- A patrolling car looks for the most suspicious player it can see and starts observing them.
+local function lookAround(cop: Cop, now: number, watched: { [Player]: boolean })
+	local best: Player?, bestRate = nil, 0
+	for _, player in Players:GetPlayers() do
+		if watched[player] or HeatService.isWanted(player) or (cop.ignoreUntil[player] or 0) > now then
+			continue
+		end
+		local obs = observe(cop, player, false)
+		if obs then
+			local speeding, cargo = Suspicion.rates(obs, SUSPICION)
+			if speeding + cargo > bestRate then
+				best, bestRate = player, speeding + cargo
+			end
+		end
+	end
+	if best then
+		cop.watch = best
+		cop.suspicion = 0
+		cop.lastSeen = now
+		watched[best] = true
+		setState(cop, "Observing")
+	end
+end
+
+-- Advances an observation or investigation by dt, escalating or ending it as the rules say.
+local function updateEncounter(cop: Cop, dt: number, now: number)
+	local player = cop.watch :: Player
+	if not player.Parent or HeatService.isWanted(player) then
+		-- wanted players belong to the pursuit; assignPursuers prefers this car
+		endEncounter(cop, if cop.state == "Investigating" then "Returning" else "Patrolling")
+		return
+	end
+	local obs = observe(cop, player, true)
+	if obs then
+		cop.lastSeen = now
+	end
+	local before = cop.suspicion
+	cop.suspicion = Suspicion.step(before, obs or NOTHING_SEEN, dt, SUSPICION)
+	if cop.suspicion > before then
+		HeatService.add(player, (cop.suspicion - before) * DETECT.HeatPerSuspicion)
+	end
+	if IS_STUDIO then
+		cop.car:SetAttribute("Suspicion", math.floor(cop.suspicion))
+	end
+
+	local nextState = Suspicion.nextState(cop.state, cop.suspicion, now - cop.lastSeen, now - cop.stateSince, SUSPICION)
+	if nextState == cop.state then
+		return
+	elseif nextState == "Investigating" then
+		cop.nextPathTime = 0
+		setState(cop, "Investigating")
+	elseif nextState == "Pursuing" then
+		-- this car calls it in; reaching the wanted threshold brings the rest of the pursuit
+		startPursuit(cop, player)
+		HeatService.raiseTo(player, Config.Heat.WantedThreshold + 5)
+	else
+		endEncounter(cop, nextState)
+	end
+end
+
+-- Mirrors the strongest attention on each player to their PoliceAttention attribute ("",
+-- "watched", "tailed") for the HUD, with a notice when a tail starts or ends.
+local function updateAttention()
+	local levels: { [Player]: string } = {}
+	for _, cop in cops do
+		local player = cop.watch
+		if player then
+			if cop.state == "Investigating" then
+				levels[player] = "tailed"
+			elseif levels[player] == nil then
+				levels[player] = "watched"
+			end
+		end
+	end
+	for _, player in Players:GetPlayers() do
+		local level = levels[player] or ""
+		local previous = attention[player] or ""
+		if level ~= previous then
+			attention[player] = level
+			player:SetAttribute("PoliceAttention", level)
+			if level == "tailed" then
+				notice:FireClient(player, "tailed", "A patrol car is tailing you. Drive clean and it may lose interest.")
+			elseif previous == "tailed" and not HeatService.isWanted(player) then
+				notice:FireClient(player, "clear", "The patrol lost interest.")
+			end
+		end
+	end
+end
+
+local function detect(dt: number)
+	local now = os.clock()
+	-- one car per player at a time, so a player isn't stalked by a convoy
+	local watched: { [Player]: boolean } = {}
+	for _, cop in cops do
+		if cop.watch then
+			watched[cop.watch] = true
+		end
+	end
+	for _, cop in cops do
+		if cop.disabledUntil > now or cop.state == "Pursuing" then
+			continue
+		end
+		if cop.watch then
+			updateEncounter(cop, dt, now)
+		else
+			lookAround(cop, now, watched)
+		end
+	end
+	updateAttention()
+end
+
+---------------------------------------------------------------------------------------------------
 -- Driving
 ---------------------------------------------------------------------------------------------------
 
@@ -353,6 +563,14 @@ local function drive(cop: Cop, target: Vector3, desiredSpeed: number, dt: number
 		if cop.stuckTime > 1.5 then
 			cop.stuckTime = 0
 			cop.reverseUntil = now + 1.3
+			-- a car that keeps backing out of the same jam gets replaced
+			table.insert(cop.reverses, now)
+			while cop.reverses[1] and now - cop.reverses[1] > POLICE.StuckWindowSeconds do
+				table.remove(cop.reverses, 1)
+			end
+			if #cop.reverses >= POLICE.StuckReversesBeforeRespawn then
+				cop.needsRespawn = true
+			end
 		end
 	else
 		cop.stuckTime = 0
@@ -360,25 +578,93 @@ local function drive(cop: Cop, target: Vector3, desiredSpeed: number, dt: number
 	VehicleService.setAIInput(cop.car, { throttle = throttle, steer = steer, parked = desiredSpeed == 0 and math.abs(speed) < 4 })
 end
 
-local function patrol(cop: Cop, dt: number, now: number)
-	local toNode = graph[cop.to]
-	local position = cop.chassis.Position
-	if (Vector3.new(toNode.position.X, position.Y, toNode.position.Z) - position).Magnitude < ARRIVE_DISTANCE then
-		local options = {}
-		for _, id in toNode.links do
-			if id ~= cop.from and graph[id] then
-				table.insert(options, id)
+-- The next node after arriving at `cop.to`: on its beat when it can, heading back toward the
+-- beat when it has wandered off it, never straight back unless it's a dead end.
+local function nextPatrolNode(cop: Cop): string
+	local here = nodes[cop.to]
+	local options, onBeat = {}, {}
+	for _, id in here.links do
+		if id ~= cop.from then
+			table.insert(options, id)
+			if cop.beat and nodes[id].district == cop.beat then
+				table.insert(onBeat, id)
 			end
 		end
-		if #options == 0 then
-			options = { cop.from :: string }
-		end
-		cop.from = cop.to
-		cop.to = options[rng:NextInteger(1, #options)]
-		toNode = graph[cop.to]
 	end
-	local fromPos = if cop.from then graph[cop.from].position else position
-	drive(cop, laneTarget(fromPos, toNode.position), POLICE.PatrolSpeed, dt, now)
+	if #options == 0 then
+		return cop.from or here.links[1]
+	end
+	local beat = cop.beat
+	if beat and #onBeat > 0 and rng:NextNumber() < POLICE.BeatStayChance then
+		return onBeat[rng:NextInteger(1, #onBeat)]
+	elseif beat and #onBeat == 0 and here.district ~= beat and beatCenters[beat] then
+		local center = beatCenters[beat]
+		table.sort(options, function(a, b)
+			return (nodes[a].position - center).Magnitude < (nodes[b].position - center).Magnitude
+		end)
+		return options[1]
+	end
+	return options[rng:NextInteger(1, #options)]
+end
+
+local function patrol(cop: Cop, speed: number, dt: number, now: number)
+	if not nodes[cop.to] then
+		cop.from, cop.to = nil, RoadGraph.nearest(cop.chassis.Position)
+	end
+	local toNode = nodes[cop.to]
+	local position = cop.chassis.Position
+	if (Vector3.new(toNode.position.X, position.Y, toNode.position.Z) - position).Magnitude < ARRIVE_DISTANCE then
+		if cop.state == "Returning" then
+			setState(cop, "Patrolling")
+		end
+		local nextId = nextPatrolNode(cop)
+		cop.from = cop.to
+		cop.to = nextId
+		toNode = nodes[cop.to]
+	end
+	local fromPos = if cop.from and nodes[cop.from] then nodes[cop.from].position else position
+	drive(cop, laneTarget(fromPos, toNode.position), speed, dt, now)
+end
+
+-- Out of sight of its target: follow the roads toward the target's area.
+local function followRoads(cop: Cop, targetPosition: Vector3, speed: number, dt: number, now: number)
+	local position = cop.chassis.Position
+	if now >= cop.nextPathTime or #cop.path == 0 then
+		cop.nextPathTime = now + 1
+		cop.path = RoadGraph.findPath(RoadGraph.nearest(position), RoadGraph.nearest(targetPosition))
+		if #cop.path == 0 then
+			drive(cop, targetPosition, speed * 0.6, dt, now)
+			return
+		end
+	end
+	local nextNode = nodes[cop.path[1]]
+	local flatDistance = (Vector3.new(nextNode.position.X, position.Y, nextNode.position.Z) - position).Magnitude
+	if flatDistance < ARRIVE_DISTANCE and #cop.path > 1 then
+		table.remove(cop.path, 1)
+		nextNode = nodes[cop.path[1]]
+	end
+	drive(cop, laneTarget(position, nextNode.position), speed, dt, now)
+end
+
+-- Investigating: no sirens, just a car in the mirror that keeps about TailDistance back.
+local function tail(cop: Cop, player: Player, dt: number, now: number)
+	local root = rootOf(player)
+	if not root then
+		patrol(cop, POLICE.PatrolSpeed, dt, now)
+		return
+	end
+	local distance = (root.Position - cop.chassis.Position).Magnitude
+	if now - cop.lastSeen < 1 and distance < 160 then
+		local playerSpeed = root.AssemblyLinearVelocity.Magnitude
+		local desired = if distance > DETECT.TailDistance * 1.4
+			then math.min(TUNING.MaxSpeed * 0.85, playerSpeed + 25)
+			elseif distance < DETECT.TailDistance * 0.7 then math.max(0, playerSpeed - 10)
+			else playerSpeed
+		drive(cop, root.Position, desired, dt, now)
+		cop.path = {}
+		return
+	end
+	followRoads(cop, root.Position, TUNING.MaxSpeed * 0.75, dt, now)
 end
 
 local function chase(cop: Cop, player: Player, dt: number, now: number)
@@ -421,22 +707,7 @@ local function chase(cop: Cop, player: Player, dt: number, now: number)
 		return
 	end
 
-	-- out of sight: follow the roads toward the player's last area
-	if now >= cop.nextPathTime or #cop.path == 0 then
-		cop.nextPathTime = now + 1
-		cop.path = findPath(nearestNode(position), nearestNode(root.Position))
-		if #cop.path == 0 then
-			drive(cop, root.Position, TUNING.MaxSpeed * 0.6, dt, now)
-			return
-		end
-	end
-	local nextNode = graph[cop.path[1]]
-	local flatDistance = (Vector3.new(nextNode.position.X, position.Y, nextNode.position.Z) - position).Magnitude
-	if flatDistance < ARRIVE_DISTANCE and #cop.path > 1 then
-		table.remove(cop.path, 1)
-		nextNode = graph[cop.path[1]]
-	end
-	drive(cop, laneTarget(position, nextNode.position), TUNING.MaxSpeed * 0.9, dt, now)
+	followRoads(cop, root.Position, TUNING.MaxSpeed * 0.9, dt, now)
 end
 
 local function updateDisabled(cop: Cop, now: number): boolean
@@ -502,31 +773,93 @@ local function updateBust(player: Player, dt: number)
 	end
 end
 
+---------------------------------------------------------------------------------------------------
+-- Upkeep
+---------------------------------------------------------------------------------------------------
+
+-- Replaces cars that sank, fell off the map or keep getting stuck, and tops patrol beats back up.
+local function maintainFleet()
+	for _, cop in table.clone(cops) do
+		local lost = not cop.car.Parent or cop.chassis.Position.Y < -4
+		if lost or cop.needsRespawn then
+			local target = cop.target
+			local beat = cop.beat
+			if cop.watch then
+				endEncounter(cop, "Patrolling")
+			end
+			removeCop(cop)
+			-- backup cars only come back while their pursuit is on
+			if beat or target then
+				local replacement = spawnCop(spawnNode(beat), beat)
+				if target and HeatService.isWanted(target) then
+					startPursuit(replacement, target)
+				end
+			end
+		end
+	end
+	for beat, count in POLICE.Beats do
+		local have = 0
+		for _, cop in cops do
+			if cop.beat == beat then
+				have += 1
+			end
+		end
+		for _ = have + 1, count do
+			spawnCop(spawnNode(beat), beat)
+		end
+	end
+	-- retire backup cars once they're idle and nobody is around to see it
+	for _, cop in table.clone(cops) do
+		if cop.beat == nil and cop.target == nil then
+			local nearPlayer = false
+			for _, player in Players:GetPlayers() do
+				local root = rootOf(player)
+				if root and (root.Position - cop.chassis.Position).Magnitude < 300 then
+					nearPlayer = true
+				end
+			end
+			if not nearPlayer then
+				if cop.watch then
+					endEncounter(cop, "Patrolling")
+				end
+				removeCop(cop)
+			end
+		end
+	end
+end
+
+local detectTimer = 0
 local maintenanceTimer = 0
 
 local function update(dt: number)
 	local now = os.clock()
 	for _, cop in table.clone(cops) do
 		if not cop.car.Parent then
-			local index = table.find(cops, cop)
-			if index then
-				table.remove(cops, index)
-			end
 			continue
 		end
 		if updateDisabled(cop, now) then
 			continue
 		end
 		local target = cop.target
-		if target and target.Parent then
+		if cop.state == "Pursuing" and target and target.Parent then
 			chase(cop, target, dt, now)
+		elseif cop.state == "Investigating" and cop.watch then
+			tail(cop, cop.watch, dt, now)
 		else
-			if target then
+			if cop.state == "Pursuing" then
+				-- the pursuit ended without the usual release (the target left)
 				returnToPatrol(cop)
 			end
 			cop.sees = false
-			patrol(cop, dt, now)
+			-- a car that's watching someone eases off a little
+			patrol(cop, if cop.state == "Observing" then POLICE.PatrolSpeed * 0.8 else POLICE.PatrolSpeed, dt, now)
 		end
+	end
+
+	detectTimer += dt
+	if detectTimer >= DETECT.IntervalSeconds then
+		detect(detectTimer)
+		detectTimer = 0
 	end
 
 	for _, player in Players:GetPlayers() do
@@ -551,33 +884,25 @@ local function update(dt: number)
 				assignPursuers(player)
 			end
 		end
-		-- retire extra backup cops once they're idle and nobody is around to see it
-		if #cops > POLICE.PatrolCount then
-			for _, cop in table.clone(cops) do
-				if #cops <= POLICE.PatrolCount then
-					break
-				end
-				if cop.target == nil then
-					local nearPlayer = false
-					for _, player in Players:GetPlayers() do
-						local root = rootOf(player)
-						if root and (root.Position - cop.chassis.Position).Magnitude < 300 then
-							nearPlayer = true
-						end
-					end
-					if not nearPlayer then
-						removeCop(cop)
-					end
-				end
-			end
-		end
+		maintainFleet()
 	end
 end
 
 function PoliceService.init()
-	if not loadGraph() then
+	if not RoadGraph.load() then
 		warn("[PoliceService] No Workspace.Map.RoadGraph; police are disabled. Build the map with MapBuilder.")
 		return
+	end
+
+	-- the middle of each district, so a patrol that wandered off its beat can head back
+	local sums: { [string]: Vector3 } = {}
+	local counts: { [string]: number } = {}
+	for _, node in nodes do
+		sums[node.district] = (sums[node.district] or Vector3.zero) + node.position
+		counts[node.district] = (counts[node.district] or 0) + 1
+	end
+	for district, sum in sums do
+		beatCenters[district] = sum / counts[district]
 	end
 
 	HeatService.onWantedChanged(function(player, isWanted)
@@ -617,20 +942,28 @@ function PoliceService.init()
 	end
 	Players.PlayerRemoving:Connect(function(player)
 		releasePursuers(player)
+		forgetPlayer(player)
 		releaseOnSpawn[player] = nil
+		attention[player] = nil
 	end)
 
-	-- spread the patrol cars across the map
-	local shuffled = table.clone(nodeIds)
-	for i = #shuffled, 2, -1 do
-		local j = rng:NextInteger(1, i)
-		shuffled[i], shuffled[j] = shuffled[j], shuffled[i]
-	end
-	for i = 1, math.min(POLICE.PatrolCount, #shuffled) do
-		spawnCop(shuffled[i])
+	-- the patrol fleet, spread over each beat
+	for beat, count in POLICE.Beats do
+		for _ = 1, count do
+			spawnCop(spawnNode(beat), beat)
+		end
 	end
 
 	RunService.Heartbeat:Connect(update)
+end
+
+-- Studio test hook: a snapshot of every patrol car's state (see Tools.ServerTests).
+function PoliceService.debugSnapshot(): { { state: string, beat: string?, watch: Player?, target: Player?, suspicion: number } }
+	local snapshot = {}
+	for _, cop in cops do
+		table.insert(snapshot, { state = cop.state, beat = cop.beat, watch = cop.watch, target = cop.target, suspicion = cop.suspicion })
+	end
+	return snapshot
 end
 
 return PoliceService

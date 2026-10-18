@@ -19,11 +19,22 @@ CombatService.init()
 PoliceService.init()
 WorldService.init()
 
--- Studio-only test hook: game.ServerStorage.Debug:Invoke("heat", 60) gives every player heat.
+-- Studio-only test hook: game.ServerStorage.Debug:Invoke("heat", 60) gives every player heat;
+-- Invoke("test") runs Tools.ServerTests against the live services; Invoke("contact") accepts a
+-- contract and opens its pickup contact's dialogue.
 if game:GetService("RunService"):IsStudio() then
 	local debug = Instance.new("BindableFunction")
 	debug.Name = "Debug"
 	debug.OnInvoke = function(command: string, value: number?)
+		if command == "test" or command == "contact" then
+			local tests = require(game:GetService("ServerStorage").Tools.ServerTests :: ModuleScript) :: any
+			return tests({
+				HeatService = HeatService,
+				JobService = JobService,
+				PlayerDataService = PlayerDataService,
+				PoliceService = PoliceService,
+			}, command)
+		end
 		for _, player in game:GetService("Players"):GetPlayers() do
 			if command == "heat" then
 				HeatService.add(player, value or 60)
