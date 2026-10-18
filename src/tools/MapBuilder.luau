@@ -8,6 +8,7 @@
 --   Downtown (centre): a tight street grid, the police station and most of the patrols.
 --   Industrial + docks (east, across the river): wide truck roads, big lots, the quay and piers.
 --   Outskirts (everywhere else): woods, hills, farmland and long country and dirt roads.
+-- The whole thing is an island: beaches taper into the sea all round, except at the docks.
 -- Downtown and the industrial district are linked three ways: the highway (fast, open), Harbor
 -- Road (direct, two-lane) and the northern Ridge Road (long and quiet); the south farm roads and
 -- the western loop make longer, calmer alternatives.
@@ -31,14 +32,21 @@ local HIGHWAY_WIDTH = 56
 local DIRT_WIDTH = 28
 local WIDE_WIDTH = 48 -- industrial truck roads
 
--- the playable region; the sea fills everything east of COAST_X
-local WORLD_X0, WORLD_X1 = -3800, 4200
+-- the flat grass rectangle everything is built on; the island's beaches and the sea lie around
+-- it (see buildCoast), and the docks' quay is its east edge
+local WORLD_X0 = -3800
 local WORLD_Z0, WORLD_Z1 = -2500, 2200
 local COAST_X = 3480
 -- the river between downtown and the industrial district; roads cross it on bridges
 local RIVER_X0, RIVER_X1 = 1100, 1260
 -- water surfaces sit this far below the ground, like the old harbor
 local WATER_TOP = -8
+-- the terrain ground. Not Grass: Grass grows blades (Terrain.Decoration, which scripts can't turn
+-- off) that poke up through roads and lots, and the style is flat
+local GROUND_MATERIAL = Enum.Material.LeafyGrass
+-- smooth terrain draws its surface this far above where a fill ends (a full 4-stud voxel under
+-- an empty one shows its surface 2 studs into the empty one), so fills stop this much short
+local TERRAIN_LIFT = 2
 -- Parts can't be longer than 2048 studs, so long pieces are split
 local MAX_PART_LENGTH = 1800
 
@@ -313,13 +321,14 @@ local function buildRoads(map: Instance)
 			local length = (pb - pa).Magnitude
 			local mid = (pa + pb) / 2
 			local cf = CFrame.lookAt(Vector3.new(mid.X, ROAD_TOP - 0.5, mid.Z), Vector3.new(pb.X, ROAD_TOP - 0.5, pb.Z))
-			part(roads, {
+			local road = part(roads, {
 				Name = "Road",
 				Size = Vector3.new(width, 1, length + width * 0.5),
 				CFrame = cf,
 				Color = color,
 				CastShadow = false,
 			})
+			road:SetAttribute("Surface", if edge.kind == "dirt" then "dirt" else "asphalt")
 
 			-- markings stop short of the junctions at the edge's two ends
 			local trimStart = if piece == 1 then width / 2 + 2 else 0
@@ -382,7 +391,7 @@ local function buildRoads(map: Instance)
 				end
 			end
 		end
-		part(roads, {
+		local junction = part(roads, {
 			Name = "Junction",
 			Shape = Enum.PartType.Cylinder,
 			Size = Vector3.new(1, width, width),
@@ -390,6 +399,7 @@ local function buildRoads(map: Instance)
 			Color = if kind == "dirt" then Palette.Dirt else Palette.Asphalt,
 			CastShadow = false,
 		})
+		junction:SetAttribute("Surface", if kind == "dirt" then "dirt" else "asphalt")
 	end
 	flush(roads, map)
 
@@ -724,13 +734,14 @@ end
 local function parkBlock(parent: Instance, x0: number, z0: number, x1: number, z1: number)
 	local sx, sz = blockBase(parent, x0, z0, x1, z1)
 	local cx, cz = (x0 + x1) / 2, (z0 + z1) / 2
-	part(parent, {
+	local lawn = part(parent, {
 		Name = "Lawn",
 		Size = Vector3.new(sx - 10, 0.4, sz - 10),
 		Position = Vector3.new(cx, SIDEWALK_TOP + 0.2, cz),
 		Color = Palette.Grass,
 		CastShadow = false,
 	})
+	lawn:SetAttribute("Surface", "grass")
 	part(parent, {
 		Name = "Fountain",
 		Shape = Enum.PartType.Cylinder,
@@ -850,9 +861,9 @@ end
 -- Districts
 ---------------------------------------------------------------------------------------------------
 
--- Rolling hills in the outskirts: terrain balls sunk into the ground, kept clear of roads and
--- points of interest. Trees on a hill sit on its surface (see groundHeight).
-type Hill = { center: Vector3, radius: number }
+-- Rolling hills in the outskirts: smooth mounds (a cosine profile) gentle enough to drive over,
+-- kept clear of roads and points of interest. Trees on a hill sit on its surface.
+type Hill = { center: Vector3, radius: number, height: number }
 local hills: { Hill } = {}
 
 -- spots kept free of trees and hills: rest stop, sawmill, cabins, quarry, farm, airstrip, motel strip
@@ -891,19 +902,156 @@ local function groundHeight(x: number, z: number): number
 	local y = GROUND_Y
 	for _, hill in hills do
 		local dx, dz = x - hill.center.X, z - hill.center.Z
-		local d2 = dx * dx + dz * dz
-		if d2 < hill.radius * hill.radius then
-			y = math.max(y, hill.center.Y + math.sqrt(hill.radius * hill.radius - d2))
+		local d = math.sqrt(dx * dx + dz * dz)
+		if d < hill.radius then
+			y = math.max(y, GROUND_Y + hill.height * (1 + math.cos(math.pi * d / hill.radius)) / 2)
 		end
 	end
 	return y
+end
+
+-- Writes the terrain over one hill's square, using every hill's height there (so overlapping
+-- hills merge instead of the later one flattening the earlier).
+local function writeHill(terrain: Terrain, hill: Hill)
+	local x0 = math.floor((hill.center.X - hill.radius) / 4) * 4
+	local z0 = math.floor((hill.center.Z - hill.radius) / 4) * 4
+	local x1 = math.ceil((hill.center.X + hill.radius) / 4) * 4
+	local z1 = math.ceil((hill.center.Z + hill.radius) / 4) * 4
+	local Y0 = -8
+	local Y1 = math.ceil((GROUND_Y + hill.height + 8) / 4) * 4
+	local layers = (Y1 - Y0) // 4
+	local materials, occupancies = {}, {}
+	for i = 1, (x1 - x0) // 4 do
+		materials[i], occupancies[i] = {}, {}
+		for j = 1, layers do
+			materials[i][j], occupancies[i][j] = {}, {}
+		end
+		for k = 1, (z1 - z0) // 4 do
+			local h = groundHeight(x0 + (i - 0.5) * 4, z0 + (k - 0.5) * 4)
+			for j = 1, layers do
+				local fill = math.clamp((h - TERRAIN_LIFT - (Y0 + (j - 1) * 4)) / 4, 0, 1)
+				materials[i][j][k] = if fill > 0 then GROUND_MATERIAL else Enum.Material.Air
+				occupancies[i][j][k] = fill
+			end
+		end
+	end
+	terrain:WriteVoxels(Region3.new(Vector3.new(x0, Y0, z0), Vector3.new(x1, Y1, z1)), 4, materials, occupancies)
+end
+
+-- The island's coast. The flat grass tiles cover the playable rectangle; around it, a band of
+-- terrain carries on as grass for a while, then slopes down through a sand beach into the sea.
+-- How far out the beach is wanders with the direction from the island's centre, so the outline
+-- isn't a rectangle. The docks' quay is the one hard edge.
+local ISLAND_CENTER = Vector2.new((WORLD_X0 + COAST_X) / 2, (WORLD_Z0 + WORLD_Z1) / 2)
+local BEACH_WIDTH = 180
+local COAST_MIN, COAST_MAX = 160, 620
+-- the sea floor shelves down past the shoreline to this depth
+local SEA_FLOOR = -26
+-- open sea around the island before the (invisible) edge of the world
+local OCEAN_MARGIN = 1200
+local DOCKS_Z0, DOCKS_Z1 = -1320, 420
+
+-- How far past the grass rectangle the shoreline is, in the direction of (x, z).
+local function coastDistance(x: number, z: number): number
+	local angle = math.atan2(z - ISLAND_CENTER.Y, x - ISLAND_CENTER.X)
+	local cx, cz = math.cos(angle), math.sin(angle)
+	local wobble = math.noise(cx * 2.2, cz * 2.2, 0.37) * 340 + math.noise(cx * 7.1, cz * 7.1, 4.2) * 120
+	return math.clamp(380 + wobble, COAST_MIN, COAST_MAX)
+end
+
+-- Ground height outside the grass rectangle (0 is the grass level).
+local function coastHeight(x: number, z: number): number
+	-- the river runs on out to sea
+	if x > RIVER_X0 and x < RIVER_X1 then
+		return SEA_FLOOR
+	end
+	-- the quay drops straight into deep water
+	if x > COAST_X and z > DOCKS_Z0 and z < DOCKS_Z1 then
+		return SEA_FLOOR
+	end
+	local dx = math.max(WORLD_X0 - x, 0, x - COAST_X)
+	local dz = math.max(WORLD_Z0 - z, 0, z - WORLD_Z1)
+	local d = math.sqrt(dx * dx + dz * dz)
+	local coast = coastDistance(x, z)
+	if d <= coast - BEACH_WIDTH then
+		return GROUND_Y
+	elseif d <= coast then
+		-- the beach: from the grass down to the waterline
+		return GROUND_Y + (WATER_TOP - 1 - GROUND_Y) * (d - (coast - BEACH_WIDTH)) / BEACH_WIDTH
+	end
+	return math.max(SEA_FLOOR, WATER_TOP - 1 - (d - coast) * 0.12)
+end
+
+-- Writes the coastal band as terrain, a 256-stud chunk at a time.
+local function buildCoast(terrain: Terrain)
+	local CHUNK = 256
+	local Y0, Y1 = -28, 4
+	local layers = (Y1 - Y0) // 4
+	local reach = COAST_MAX + 220
+	local x0 = math.floor((WORLD_X0 - reach) / CHUNK) * CHUNK
+	local x1 = math.ceil((COAST_X + reach) / CHUNK) * CHUNK
+	local z0 = math.floor((WORLD_Z0 - reach) / CHUNK) * CHUNK
+	local z1 = math.ceil((WORLD_Z1 + reach) / CHUNK) * CHUNK
+	local columns = CHUNK // 4
+	for cx = x0, x1 - CHUNK, CHUNK do
+		for cz = z0, z1 - CHUNK, CHUNK do
+			-- skip chunks entirely under the grass tiles, or entirely open sea
+			local inside = cx >= WORLD_X0 and cx + CHUNK <= COAST_X and cz >= WORLD_Z0 and cz + CHUNK <= WORLD_Z1
+			local nx = math.max(WORLD_X0 - (cx + CHUNK), 0, cx - COAST_X)
+			local nz = math.max(WORLD_Z0 - (cz + CHUNK), 0, cz - WORLD_Z1)
+			if inside or math.sqrt(nx * nx + nz * nz) > reach then
+				continue
+			end
+			local materials, occupancies = {}, {}
+			for i = 1, columns do
+				materials[i], occupancies[i] = {}, {}
+				for j = 1, layers do
+					materials[i][j], occupancies[i][j] = {}, {}
+				end
+				for k = 1, columns do
+					local x, z = cx + (i - 0.5) * 4, cz + (k - 0.5) * 4
+					local underTiles = x > WORLD_X0 and x < COAST_X and z > WORLD_Z0 and z < WORLD_Z1
+						and not (x > RIVER_X0 and x < RIVER_X1)
+					local h = if underTiles then GROUND_Y else coastHeight(x, z)
+					local surface = if h > GROUND_Y - 1.5 then GROUND_MATERIAL else Enum.Material.Sand
+					for j = 1, layers do
+						local bottom = Y0 + (j - 1) * 4
+						local fill = math.clamp((h - TERRAIN_LIFT - bottom) / 4, 0, 1)
+						-- below the waterline a voxel is all ground or all water (a part-filled
+						-- voxel would leave an air pocket in the sea)
+						if bottom + 4 <= WATER_TOP then
+							fill = if fill >= 0.5 then 1 else 0
+						end
+						if fill > 0 then
+							materials[i][j][k] = if h - bottom > 4 then Enum.Material.Sand else surface
+							occupancies[i][j][k] = fill
+						elseif bottom + 4 <= WATER_TOP and not underTiles then
+							materials[i][j][k] = Enum.Material.Water
+							occupancies[i][j][k] = 1
+						else
+							materials[i][j][k] = Enum.Material.Air
+							occupancies[i][j][k] = 0
+						end
+					end
+				end
+			end
+			local region = Region3.new(Vector3.new(cx, Y0, cz), Vector3.new(cx + CHUNK, Y1, cz + CHUNK))
+			terrain:WriteVoxels(region, 4, materials, occupancies)
+			task.wait()
+		end
+	end
 end
 
 local function buildGround(map: Instance)
 	local ground = Instance.new("Folder")
 	ground.Name = "Ground"
 
-	-- grass in tiles (parts max out at 2048 studs), with a gap for the river and ending at the coast
+	local terrain = workspace.Terrain
+	terrain:Clear()
+
+	-- The ground is terrain grass, so the beaches and hills blend into it. Invisible "Grass"
+	-- tiles mark it out for the phone GPS (parts max out at 2048 studs, hence tiles); they leave
+	-- a gap for the river and end at the quay.
 	local spans = {
 		{ WORLD_X0, RIVER_X0, 3 },
 		{ RIVER_X1, COAST_X, 2 },
@@ -915,64 +1063,83 @@ local function buildGround(map: Instance)
 		local d = (WORLD_Z1 - WORLD_Z0) / zTiles
 		for i = 0, count - 1 do
 			for j = 0, zTiles - 1 do
-				part(ground, {
+				local tile = part(ground, {
 					Name = "Grass",
 					Size = Vector3.new(w, 8, d),
 					Position = Vector3.new(x0 + w * (i + 0.5), GROUND_Y - 4, WORLD_Z0 + d * (j + 0.5)),
-					Color = Palette.Grass,
+					Transparency = 1,
+					CanCollide = false,
+					CanQuery = false,
+					CanTouch = false,
 					CastShadow = false,
 				})
+				-- a terrain surface sits 2 studs above where its fill ends (see TERRAIN_LIFT)
+				terrain:FillBlock(tile.CFrame * CFrame.new(0, -TERRAIN_LIFT / 2, 0), tile.Size - Vector3.new(0, TERRAIN_LIFT, 0), GROUND_MATERIAL)
 			end
 		end
 	end
 
-	local terrain = workspace.Terrain
-	terrain:Clear()
 	terrain.WaterColor = Palette.Water
 	terrain.WaterTransparency = 0.6
 	terrain.WaterReflectance = 0.25
 	terrain.WaterWaveSize = 0.08
 	terrain.WaterWaveSpeed = 6
-	terrain:SetMaterialColor(Enum.Material.Grass, Palette.Grass)
-	terrain:SetMaterialColor(Enum.Material.Sand, Palette.Dirt)
+	terrain:SetMaterialColor(GROUND_MATERIAL, Palette.TerrainGrass)
+	terrain:SetMaterialColor(Enum.Material.Sand, Palette.Sand)
 
-	-- water in z slices so each fill stays a manageable size; players can swim back to the quay
-	local depth = 16
-	local slices = 4
-	local sliceDepth = (WORLD_Z1 - WORLD_Z0 + 200) / slices
-	for i = 0, slices - 1 do
-		local z = WORLD_Z0 - 100 + sliceDepth * (i + 0.5)
-		for _, body in { { COAST_X, WORLD_X1 + 100 }, { RIVER_X0, RIVER_X1 } } do
-			local width = body[2] - body[1]
-			local x = (body[1] + body[2]) / 2
-			terrain:FillBlock(CFrame.new(x, WATER_TOP - depth / 2, z), Vector3.new(width, depth, sliceDepth), Enum.Material.Water)
-			terrain:FillBlock(CFrame.new(x, WATER_TOP - depth - 2, z), Vector3.new(width + 40, 4, sliceDepth), Enum.Material.Sand)
+	-- the sea around the island, and the river through it, in slices so each fill stays a
+	-- manageable size; players can swim back to shore
+	local reach = COAST_MAX + OCEAN_MARGIN
+	local seaX0, seaX1 = WORLD_X0 - reach, COAST_X + reach
+	local seaZ0, seaZ1 = WORLD_Z0 - reach, WORLD_Z1 + reach
+	local depth = WATER_TOP - SEA_FLOOR
+	local slice = 1000
+	for x = seaX0, seaX1 - 1, slice do
+		local w = math.min(slice, seaX1 - x)
+		for z = seaZ0, seaZ1 - 1, slice do
+			local d = math.min(slice, seaZ1 - z)
+			-- the playable rectangle's sea bed is never seen, except along the river
+			local inside = x >= WORLD_X0 and x + w <= COAST_X and z >= WORLD_Z0 and z + d <= WORLD_Z1
+			if not inside then
+				local center = Vector3.new(x + w / 2, 0, z + d / 2)
+				terrain:FillBlock(CFrame.new(center.X, WATER_TOP - depth / 2, center.Z), Vector3.new(w, depth, d), Enum.Material.Water)
+				terrain:FillBlock(CFrame.new(center.X, SEA_FLOOR - 2, center.Z), Vector3.new(w, 4, d), Enum.Material.Sand)
+			end
 		end
 		task.wait()
 	end
+	local riverZ0, riverZ1 = WORLD_Z0 - reach, WORLD_Z1 + reach
+	for z = riverZ0, riverZ1 - 1, slice do
+		local d = math.min(slice, riverZ1 - z)
+		local x = (RIVER_X0 + RIVER_X1) / 2
+		terrain:FillBlock(CFrame.new(x, WATER_TOP - depth / 2, z + d / 2), Vector3.new(RIVER_X1 - RIVER_X0, depth, d), Enum.Material.Water)
+		terrain:FillBlock(CFrame.new(x, SEA_FLOOR - 2, z + d / 2), Vector3.new(RIVER_X1 - RIVER_X0 + 40, 4, d), Enum.Material.Sand)
+	end
+	buildCoast(terrain)
 
-	-- hills: balls sunk 60% into the ground, so each is a mound 0.8 radius across
+	-- hills: about a tenth as tall as they are wide in radius, so the steepest part is ~9 degrees
+	-- and a car can drive over them (slowly: it's off-road)
 	table.clear(hills)
 	local attempts = 0
 	while #hills < 26 and attempts < 600 do
 		attempts += 1
-		local radius = rng:NextNumber(110, 220)
+		local radius = rng:NextNumber(220, 420)
 		local p = Vector3.new(rng:NextNumber(WORLD_X0 + 150, COAST_X - 300), 0, rng:NextNumber(WORLD_Z0 + 150, WORLD_Z1 - 150))
-		local footprint = radius * 0.8
 		if
-			not nearRoad(p, footprint + 20)
-			and not inClearing(p, footprint)
-			and not inRiver(p, footprint + 30)
-			and not inTown(p, footprint + 60)
+			not nearRoad(p, radius + 10)
+			and not inClearing(p, radius)
+			and not inRiver(p, radius + 20)
+			and not inTown(p, radius + 40)
 		then
-			local center = Vector3.new(p.X, GROUND_Y - radius * 0.6, p.Z)
-			table.insert(hills, { center = center, radius = radius })
-			terrain:FillBall(center, radius, Enum.Material.Grass)
-			task.wait()
+			table.insert(hills, { center = p, radius = radius, height = radius * rng:NextNumber(0.08, 0.11) })
 		end
 	end
+	for _, hill in hills do
+		writeHill(terrain, hill)
+		task.wait()
+	end
 
-	-- invisible map bounds, in pieces short enough to be parts
+	-- the edge of the world, far out at sea: invisible walls in pieces short enough to be parts
 	local function wall(from: Vector3, to: Vector3)
 		local length = (to - from).Magnitude
 		local pieces = math.ceil(length / MAX_PART_LENGTH)
@@ -989,10 +1156,10 @@ local function buildGround(map: Instance)
 		end
 	end
 	local y = 100
-	wall(Vector3.new(WORLD_X0, y, WORLD_Z0), Vector3.new(WORLD_X1, y, WORLD_Z0))
-	wall(Vector3.new(WORLD_X0, y, WORLD_Z1), Vector3.new(WORLD_X1, y, WORLD_Z1))
-	wall(Vector3.new(WORLD_X0, y, WORLD_Z0), Vector3.new(WORLD_X0, y, WORLD_Z1))
-	wall(Vector3.new(WORLD_X1, y, WORLD_Z0), Vector3.new(WORLD_X1, y, WORLD_Z1))
+	wall(Vector3.new(seaX0, y, seaZ0), Vector3.new(seaX1, y, seaZ0))
+	wall(Vector3.new(seaX0, y, seaZ1), Vector3.new(seaX1, y, seaZ1))
+	wall(Vector3.new(seaX0, y, seaZ0), Vector3.new(seaX0, y, seaZ1))
+	wall(Vector3.new(seaX1, y, seaZ0), Vector3.new(seaX1, y, seaZ1))
 	flush(ground, map)
 end
 
@@ -1638,7 +1805,7 @@ local function buildOutskirts(map: Instance)
 			end
 		end
 		if clear then
-			part(outskirts, {
+			local field = part(outskirts, {
 				Name = "Field",
 				Size = size,
 				Position = p + Vector3.new(0, 0.1, 0),
@@ -1646,6 +1813,7 @@ local function buildOutskirts(map: Instance)
 				Material = Enum.Material.Grass,
 				CastShadow = false,
 			})
+			field:SetAttribute("Surface", "grass")
 			fields += 1
 		end
 	end
@@ -1706,7 +1874,7 @@ local function buildOutskirts(map: Instance)
 	cabin(outskirts, Vector3.new(-2810, GROUND_Y, -735), Vector3.new(-0.4, 0, 1))
 
 	-- the Gravel Quarry at the top of the dirt loop
-	part(outskirts, {
+	local yard = part(outskirts, {
 		Name = "Lot",
 		Size = Vector3.new(380, 0.4, 280),
 		Position = Vector3.new(-750, GROUND_Y + 0.1, -2270),
@@ -1714,13 +1882,14 @@ local function buildOutskirts(map: Instance)
 		Material = Enum.Material.Ground,
 		CastShadow = false,
 	})
+	yard:SetAttribute("Surface", "dirt")
 	for _ = 1, 10 do
 		rock(outskirts, Vector3.new(-750 + rng:NextNumber(-170, 170), GROUND_Y, -2340 + rng:NextNumber(-60, 40)), rng:NextNumber(1.5, 3.5))
 	end
 	building(outskirts, Vector3.new(-860, GROUND_Y, -2180), Vector3.new(40, 14, 20), Palette.Industrial[3], Vector3.new(0, 0, 1))
 
 	-- Farmstead Barn on the south farm road
-	part(outskirts, {
+	local farmYard = part(outskirts, {
 		Name = "Lot",
 		Size = Vector3.new(200, 0.4, 140),
 		Position = Vector3.new(-880, GROUND_Y + 0.1, 1850),
@@ -1728,6 +1897,7 @@ local function buildOutskirts(map: Instance)
 		Material = Enum.Material.Ground,
 		CastShadow = false,
 	})
+	farmYard:SetAttribute("Surface", "dirt")
 	barn(outskirts, Vector3.new(-900, GROUND_Y, 1930))
 
 	-- Old Airstrip: a runway and a hangar facing it
@@ -1912,6 +2082,15 @@ function MapBuilder.applyLighting()
 	local rays = ensure("SunRaysEffect", "SunRays") :: SunRaysEffect
 	rays.Intensity = 0.04
 	rays.Spread = 0.6
+
+	-- the client draws a cartoon sun, moon and clouds (SkyController); keep the stars
+	local sky = ensure("Sky", "Sky") :: Sky
+	sky.CelestialBodiesShown = false
+	sky.StarCount = 3000
+	local clouds = workspace.Terrain:FindFirstChildOfClass("Clouds")
+	if clouds then
+		clouds:Destroy()
+	end
 
 	local dof = Lighting:FindFirstChildOfClass("DepthOfFieldEffect")
 	if dof then

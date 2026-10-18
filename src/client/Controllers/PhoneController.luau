@@ -1,9 +1,10 @@
 --!strict
 -- The burner phone, with two apps: Contracts (jobs from the server, accept one, the job in
 -- progress) and GPS (UI.GpsApp: map, route and directions to the job's pickup or dropoff, speed
--- limit). Open with the Phone button or P; getting into a car opens the GPS. Contract updates
--- arrive as HUD toasts and set the objective and the GPS destination. The phone is the only
--- navigation: nothing marks destinations in the world.
+-- limit). Open with the Phone button or P; getting into a car opens the GPS. Every game
+-- notification (contract updates, police, busts) pops up on the phone: at the top of its screen
+-- while it's open, or with the phone peeking up from the bottom of the screen while it's away.
+-- The phone is the only navigation: nothing marks destinations in the world.
 
 local CollectionService = game:GetService("CollectionService")
 local Lighting = game:GetService("Lighting")
@@ -33,6 +34,10 @@ local PhoneController = {}
 local PHONE_SIZE = Vector2.new(300, 560)
 local OPEN_POSITION = UDim2.new(1, -16, 1, -80)
 local CLOSED_POSITION = UDim2.new(1, -16, 1, PHONE_SIZE.Y + 40)
+-- when the phone peeks up with notifications: the space above the first card (bezel, status
+-- bar) and below the last
+local PEEK_TOP = 38
+local PEEK_BOTTOM = 14
 
 local phone: Frame
 local list: ScrollingFrame
@@ -42,6 +47,11 @@ local activeCard: Frame
 local activeTitle: TextLabel
 local activeBody: TextLabel
 local isOpen = false
+local fit: UIScale
+local notices: Frame
+local noticeOrder = 0
+local liveNotices = 0
+local peeking = false
 
 -- the job the player is on, if any, how far along it is, and the code the pickup contact wants
 local activeContract: Types.Contract? = nil
@@ -272,11 +282,22 @@ function PhoneController.open(app: string?)
 		return
 	end
 	isOpen = true
+	peeking = false
 	phone.Visible = true
 	TweenService:Create(phone, TweenInfo.new(0.35, Enum.EasingStyle.Quint), { Position = OPEN_POSITION }):Play()
 	if currentApp == "contracts" then
 		task.spawn(reload)
 	end
+end
+
+local function slideAway()
+	local tween = TweenService:Create(phone, TweenInfo.new(0.25, Enum.EasingStyle.Quint, Enum.EasingDirection.In), { Position = CLOSED_POSITION })
+	tween:Play()
+	tween.Completed:Connect(function()
+		if not isOpen and not peeking then
+			phone.Visible = false
+		end
+	end)
 end
 
 function PhoneController.close()
@@ -285,11 +306,127 @@ function PhoneController.close()
 		return
 	end
 	isOpen = false
-	local tween = TweenService:Create(phone, TweenInfo.new(0.25, Enum.EasingStyle.Quint, Enum.EasingDirection.In), { Position = CLOSED_POSITION })
-	tween:Play()
-	tween.Completed:Connect(function()
-		if not isOpen then
-			phone.Visible = false
+	slideAway()
+end
+
+---------------------------------------------------------------------------------------------------
+-- Notifications
+---------------------------------------------------------------------------------------------------
+
+-- With the phone away, it peeks up far enough to show its notifications (re-run as cards come
+-- and go, once the list has laid itself out).
+local function peek()
+	if isOpen then
+		return
+	end
+	peeking = true
+	phone.Visible = true
+	local cards = 0
+	for _, child in notices:GetChildren() do
+		if child.Name == "Notice" and child:IsA("Frame") then
+			cards += child.Size.Y.Offset + 6
+		end
+	end
+	local shown = (PEEK_TOP + cards + PEEK_BOTTOM) * fit.Scale
+	local y = PHONE_SIZE.Y * fit.Scale - shown
+	TweenService:Create(phone, TweenInfo.new(0.35, Enum.EasingStyle.Back), { Position = UDim2.new(1, -16, 1, y) }):Play()
+end
+
+local function unpeek()
+	if not peeking then
+		return
+	end
+	peeking = false
+	if not isOpen then
+		slideAway()
+	end
+end
+
+-- A notification card at the top of the phone screen; leaves after `seconds`. `big` shows the
+-- title large, for the moments that matter (BUSTED, WANTED, +$1,200).
+function PhoneController.notify(kind: string, title: string, body: string?, seconds: number?, big: boolean?)
+	local style = Theme.Notices[kind] or Theme.Notices.info
+	noticeOrder += 1
+	liveNotices += 1
+	local hasBody = body ~= nil and body ~= ""
+	local height = (if big then 50 else 44) + (if hasBody then 30 else 0)
+	local card = Theme.new("Frame", {
+		Name = "Notice",
+		LayoutOrder = -noticeOrder,
+		BackgroundColor3 = C.PanelRaised,
+		BorderSizePixel = 0,
+		Size = UDim2.new(1, 0, 0, height),
+		Parent = notices,
+	}, { Theme.corner(14), Theme.stroke(0.5, style.color) })
+	local chip = Theme.new("Frame", {
+		BackgroundColor3 = style.color,
+		BackgroundTransparency = 0.8,
+		BorderSizePixel = 0,
+		Size = UDim2.fromOffset(28, 28),
+		Position = UDim2.fromOffset(10, 10),
+		Parent = card,
+	}, { Theme.corner(14) })
+	Theme.label({
+		Text = style.icon,
+		Font = F.Heavy,
+		TextSize = 15,
+		TextColor3 = style.color,
+		TextXAlignment = Enum.TextXAlignment.Center,
+		Size = UDim2.fromScale(1, 1),
+		Parent = chip,
+	})
+	Theme.label({
+		Text = title,
+		Font = if big then F.Heavy else F.Bold,
+		TextSize = if big then 26 else 14,
+		TextColor3 = if big then style.color else C.Text,
+		TextTruncate = Enum.TextTruncate.AtEnd,
+		Size = UDim2.new(1, -56, 0, if big then 32 else 18),
+		Position = UDim2.fromOffset(46, if big then 8 else 15),
+		Parent = card,
+	})
+	if hasBody then
+		Theme.label({
+			Text = body,
+			TextSize = 12,
+			TextColor3 = C.TextDim,
+			TextWrapped = true,
+			TextYAlignment = Enum.TextYAlignment.Top,
+			Size = UDim2.new(1, -56, 0, 30),
+			Position = UDim2.fromOffset(46, if big then 42 else 36),
+			Parent = card,
+		})
+	end
+	-- keep the stack short
+	local cards = {}
+	for _, child in notices:GetChildren() do
+		if child.Name == "Notice" then
+			table.insert(cards, child)
+		end
+	end
+	table.sort(cards, function(a, b)
+		return (a :: Frame).LayoutOrder < (b :: Frame).LayoutOrder
+	end)
+	for i = 3, #cards do
+		cards[i]:Destroy()
+	end
+
+	local scale = Theme.new("UIScale", { Scale = 0.85, Parent = card })
+	TweenService:Create(scale, TweenInfo.new(0.3, Enum.EasingStyle.Back), { Scale = 1 }):Play()
+	peek()
+
+	task.delay(seconds or 4, function()
+		liveNotices = math.max(0, liveNotices - 1)
+		if card.Parent then
+			local fade = TweenService:Create(scale, TweenInfo.new(0.2, Enum.EasingStyle.Quint, Enum.EasingDirection.In), { Scale = 0 })
+			fade:Play()
+			fade.Completed:Wait()
+			card:Destroy()
+		end
+		if liveNotices == 0 then
+			unpeek()
+		elseif peeking then
+			peek()
 		end
 	end)
 end
@@ -316,23 +453,22 @@ local function onContractUpdated(status: Types.JobStatus, contract: Types.Contra
 		local code = if activePasscode then ` · code "{activePasscode}"` else ""
 		HudController.setObjective(`Meet the contact at {contract.pickupName}{code}`, "pickup")
 		GpsApp.setDestination(pointPosition(contract.pickupName, Config.Tags.Pickup), contract.pickupName, C.Pickup)
-		HudController.toast("pickup", "Contract accepted", `Meet the contact at {contract.pickupName}{code}`, 8)
+		HudController.notify("pickup", "Contract accepted", `Meet the contact at {contract.pickupName}{code}`, 8)
 	elseif status == "pickedUp" then
 		activeStage = "pickedUp"
 		HudController.setObjective(`Deliver to {contract.dropoffName}. Keep a low profile.`, "dropoff")
 		GpsApp.setDestination(pointPosition(contract.dropoffName, Config.Tags.Dropoff), contract.dropoffName, C.Dropoff)
-		HudController.toast("dropoff", "Cargo loaded", `Deliver to {contract.dropoffName} · route on your GPS`)
+		HudController.notify("dropoff", "Cargo loaded", `Deliver to {contract.dropoffName} · route on your GPS`)
 	else
 		activeContract, activeStage, activePasscode = nil, nil, nil
 		HudController.setObjective("")
 		GpsApp.setDestination(nil)
 		if status == "delivered" then
-			HudController.showBanner(`+{Theme.money(contract.payout)}`, C.Cash)
-			HudController.toast("cash", "Delivered", `{contract.syndicate} paid {Theme.money(contract.payout)}`, 5)
+			HudController.notify("cash", `+{Theme.money(contract.payout)}`, `Delivered · {contract.syndicate} paid up`, 5, true)
 		elseif status == "failed" then
-			HudController.toast("danger", "Job failed", "The cargo is gone.", 5)
+			HudController.notify("danger", "Job failed", "The cargo is gone.", 5)
 		elseif status == "busted" then
-			HudController.toast("police", "Cargo confiscated", "The police took the shipment.", 5)
+			HudController.notify("police", "Cargo confiscated", "The police took the shipment.", 5)
 		end
 	end
 	if isOpen and currentApp == "contracts" then
@@ -489,7 +625,7 @@ function PhoneController.init()
 		Parent = gui,
 	}, { Theme.corner(32), Theme.stroke(0, Color3.fromRGB(58, 60, 68)), Theme.padding(8) })
 	-- shrink to fit short screens (the phone button and a margin stay visible)
-	local fit = Theme.new("UIScale", { Parent = phone })
+	fit = Theme.new("UIScale", { Parent = phone })
 	local function rescale()
 		local camera = workspace.CurrentCamera
 		local height = if camera then camera.ViewportSize.Y else 800
@@ -570,6 +706,19 @@ function PhoneController.init()
 		Parent = screen,
 	}, { Theme.corner(3) })
 	home.Activated:Connect(PhoneController.close)
+
+	-- notifications drop in over whatever app is showing, below the status bar
+	notices = Theme.new("Frame", {
+		Name = "Notices",
+		BackgroundTransparency = 1,
+		Size = UDim2.new(1, -16, 0, 0),
+		AutomaticSize = Enum.AutomaticSize.Y,
+		Position = UDim2.fromOffset(8, 30),
+		ZIndex = 10,
+		Parent = screen,
+	})
+	Theme.new("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 6), Parent = notices })
+	HudController.setNotifier(PhoneController.notify)
 
 	-- the GPS redraws every frame while it's showing
 	RunService.RenderStepped:Connect(function(dt)

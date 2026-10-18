@@ -4,8 +4,15 @@
 --
 -- The chassis floats on four raycast springs; driving, grip and steering are impulses on the chassis.
 -- Wheels are visual only. Front of the car is the chassis LookVector (-Z).
+--
+-- Off the road (grass, sand, terrain) the car is much slower: each wheel checks what it's
+-- standing on, and the top speed and acceleration scale with the share of wheels off-road
+-- (Config.Vehicles.Offroad).
 
+local Config = require(script.Parent.Config)
 local Types = require(script.Parent.Types)
+
+local OFFROAD = Config.Vehicles.Offroad
 
 type Tuning = Types.VehicleTuning
 
@@ -24,6 +31,9 @@ local COAST_DECEL = 6
 local COAST_DRAG = 0.25
 -- Below this speed with no throttle the car holds still, like a car in gear with the brake on.
 local HOLD_SPEED = 1.5
+-- Share of gravity's pull along the slope that's cancelled while the wheels are down: Roblox
+-- gravity is far stronger than a car's acceleration, so without help no car could climb a hill.
+local HILL_ASSIST = 0.85
 
 local paramsByCar: { [Model]: RaycastParams } = setmetatable({}, { __mode = "k" }) :: any
 
@@ -42,6 +52,31 @@ local function raycastParams(car: Model): RaycastParams
 	return params
 end
 
+-- What a ray hit, as a surface name: "asphalt", "concrete" or "paved" (roads, lots, anything
+-- unlabelled), "dirt" (dirt roads and yards), "grass", "sand" or "water". MapBuilder labels map
+-- parts with a Surface attribute; terrain goes by its material.
+function VehiclePhysics.surfaceOf(result: RaycastResult): string
+	local instance = result.Instance
+	if instance:IsA("Terrain") then
+		local material = result.Material
+		if material == Enum.Material.Sand then
+			return "sand"
+		elseif material == Enum.Material.Water then
+			return "water"
+		elseif material == Enum.Material.Ground or material == Enum.Material.Mud then
+			return "dirt"
+		end
+		return "grass"
+	end
+	local surface = instance:GetAttribute("Surface")
+	return if typeof(surface) == "string" then surface else "paved"
+end
+
+-- Whether a surface counts as off the road (dirt roads and yards are still roads).
+function VehiclePhysics.isOffroad(surface: string): boolean
+	return surface == "grass" or surface == "sand" or surface == "water"
+end
+
 -- Returns how many wheels touched the ground.
 function VehiclePhysics.step(car: Model, chassis: BasePart, tuning: Tuning, input: Input, dt: number): number
 	dt = math.min(dt, 1 / 20)
@@ -58,6 +93,7 @@ function VehiclePhysics.step(car: Model, chassis: BasePart, tuning: Tuning, inpu
 	local params = raycastParams(car)
 
 	local grounded = 0
+	local offroad = 0
 	for _, sx in { -1, 1 } do
 		for _, sz in { -1, 1 } do
 			local corner = cf:PointToWorldSpace(Vector3.new(sx * (size.X / 2 - 0.8), -size.Y / 2 + 0.3, sz * (size.Z / 2 - 2.6)))
@@ -73,6 +109,9 @@ function VehiclePhysics.step(car: Model, chassis: BasePart, tuning: Tuning, inpu
 					end
 				end
 				grounded += 1
+				if VehiclePhysics.isOffroad(VehiclePhysics.surfaceOf(result)) then
+					offroad += 1
+				end
 			end
 		end
 	end
@@ -87,6 +126,12 @@ function VehiclePhysics.step(car: Model, chassis: BasePart, tuning: Tuning, inpu
 		local forwardSpeed = velocity:Dot(forward)
 		local throttle = math.clamp(input.throttle, -1, 1)
 
+		-- off the road: lower top speed and weaker acceleration, by the share of wheels off it
+		local rough = offroad / grounded
+		local maxSpeed = tuning.MaxSpeed * (1 - rough * (1 - OFFROAD.SpeedFactor))
+		local reverseSpeed = tuning.ReverseSpeed * (1 - rough * (1 - OFFROAD.SpeedFactor))
+		local acceleration = tuning.Acceleration * (1 - rough * (1 - OFFROAD.AccelFactor))
+
 		-- slow toward 0 at `rate` without overshooting, so braking ends at exactly 0
 		local function brakeToStop(rate: number): number
 			return -math.sign(forwardSpeed) * math.min(math.abs(forwardSpeed) / dt, rate)
@@ -100,21 +145,29 @@ function VehiclePhysics.step(car: Model, chassis: BasePart, tuning: Tuning, inpu
 		elseif throttle > 0 then
 			if forwardSpeed < -2 then
 				accel = tuning.Brake * throttle
-			elseif forwardSpeed < tuning.MaxSpeed then
+			elseif forwardSpeed < maxSpeed then
 				-- engine falls off toward top speed
-				accel = tuning.Acceleration * throttle * (1 - 0.6 * math.max(forwardSpeed, 0) / tuning.MaxSpeed)
+				accel = acceleration * throttle * (1 - 0.6 * math.max(forwardSpeed, 0) / maxSpeed)
 			end
 		elseif throttle < 0 then
 			if forwardSpeed > 2 then
 				accel = tuning.Brake * throttle
-			elseif forwardSpeed > -tuning.ReverseSpeed then
-				accel = tuning.Acceleration * 0.6 * throttle
+			elseif forwardSpeed > -reverseSpeed then
+				accel = acceleration * 0.6 * throttle
 			end
 		else
 			accel = brakeToStop(COAST_DECEL + COAST_DRAG * math.abs(forwardSpeed))
 			holding = math.abs(forwardSpeed) < HOLD_SPEED
 		end
+		-- leaving the road at speed bogs the car down to the off-road limit
+		if forwardSpeed > maxSpeed then
+			accel = math.min(accel, -math.min(OFFROAD.Drag, (forwardSpeed - maxSpeed) / dt))
+		elseif forwardSpeed < -reverseSpeed then
+			accel = math.max(accel, math.min(OFFROAD.Drag, (-reverseSpeed - forwardSpeed) / dt))
+		end
 		chassis:ApplyImpulse(forward * accel * mass * dt)
+		-- arcade hill assist: take most of the slope out of gravity along the car
+		chassis:ApplyImpulse(forward * forward.Y * gravity * HILL_ASSIST * mass * dt)
 
 		-- tires resist sliding sideways; a held car doesn't creep sideways either
 		local sideways = velocity:Dot(right)

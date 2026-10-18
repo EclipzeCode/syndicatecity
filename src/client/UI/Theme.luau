@@ -26,6 +26,16 @@ Theme.Colors = {
 	Danger = Color3.fromRGB(255, 120, 110),
 }
 
+-- Notification kinds: accent color and the glyph in the icon chip.
+Theme.Notices = {
+	cash = { color = Theme.Colors.Cash, icon = "$" },
+	pickup = { color = Theme.Colors.Pickup, icon = "◆" },
+	dropoff = { color = Theme.Colors.Dropoff, icon = "◎" },
+	danger = { color = Theme.Colors.Danger, icon = "!" },
+	police = { color = Theme.Colors.Police, icon = "★" },
+	info = { color = Theme.Colors.Text, icon = "i" },
+} :: { [string]: { color: Color3, icon: string } }
+
 Theme.Fonts = {
 	Body = Enum.Font.GothamMedium,
 	Bold = Enum.Font.GothamBold,

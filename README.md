@@ -14,7 +14,7 @@ Code lives in `src/` and syncs into Studio. Save the place as `SmugglingGame.rbx
 
 **No Rojo plugin connected?** Run `python tools/devsync.py`, enable Game Settings → Security → Allow HTTP Requests, and run `require(game.ServerStorage.Tools.DevSync:Clone())()` in the command bar (paste `src/tools/DevSync.luau`'s body the very first time).
 
-**Building the map:** run `require(game.ServerStorage.Tools.MapBuilder:Clone()).build()` in the command bar. It deletes and regenerates `Workspace.Map` and the terrain (three districts, road graph for police AI and the GPS, tagged job points, spawns) and applies the lighting baseline. The layout is deterministic. Save the place afterwards.
+**Building the map:** run `require(game.ServerStorage.Tools.MapBuilder:Clone()).build()` in the command bar. It deletes and regenerates `Workspace.Map` and the terrain (an island with three districts, tapered beaches, road graph for police AI and the GPS, tagged job points, spawns) and applies the lighting baseline. The layout is deterministic. Save the place afterwards.
 
 ## Project layout
 
@@ -27,13 +27,15 @@ Code lives in `src/` and syncs into Studio. Save the place as `SmugglingGame.rbx
 
 ## v0.1 loop
 
-1. Spawn at the Sunset Motel. Stand on a green pad and hold **E** to get a Sedan or Van; press **F** at your car to drive (friends can ride along).
+1. Spawn at the Sunset Motel. Stand on a green pad and hold **E** to get a Sedan or Van; press **F** at your car to drive (friends can ride along). Stay on the roads: on grass or sand a car manages about a third of its top speed. Dirt roads count as roads.
 2. Press **P** (or click **Phone**) to open the contract board and accept a contract. Contracts are **Routine** (short, cheap), **Standard** or **High-value** (long haul, more pay, cargo police notice more easily). Accepting gives you a **code word**; the GPS routes you to the pickup.
 3. At the pickup a **contact** waits. Press **E** to talk and pick the right answer (usually your code word; wrong answers just get a retry). The crate appears on your car; deliver it and hold **E** at the dropoff. Payment goes to dirty cash.
 4. Police patrol all the time (most of them downtown). A patrol that **sees** you speeding, or gets a close look at your cargo, starts watching you (the status panel outline turns blue). If it gets suspicious enough it **tails** you; drive clean and it loses interest. Keep it up and it calls a **pursuit**: you're **wanted**. Unseen speeding and gunfire also raise heat; at 50 heat you're wanted too.
 5. Wanted: cops chase you with sirens. Stay out of their sight to drain heat. If a cop stays next to you while you're slow or stopped, you're **busted**: cargo confiscated, 25% of dirty cash fined, car impounded, released at the police station.
 
 **Pistol** (on foot only): click to fire, **R** to reload. Hitting a police car 12 times disables it for 20 s, but makes you wanted. Cops fire back only at wanted players running on foot; anyone standing still gets arrested instead. No blood: hits show a white flash, and players at 0 health are "knocked out" and respawn (a wanted player who gets knocked out is arrested).
+
+**Notifications** (contracts, police, busts) pop up on the phone, which peeks up from the bottom of the screen when it's put away. The speedometer has no number; the exact speed is on the phone's GPS.
 
 **Studio debug:** while playing, from the server command bar: `game.ServerStorage.Debug:Invoke("heat", 60)` or `("cash", 1000)`; `print(game.ServerStorage.Debug:Invoke("test"))` runs the server tests (`src/tools/ServerTests.luau`); `game.ServerStorage.Debug:Invoke("contact")` accepts a contract and opens its contact's dialogue. Police cars carry a `PoliceState` attribute (and `Suspicion` in Studio) for watching the AI.
 
@@ -60,7 +62,7 @@ Tag parts in Studio with the Tag Editor (Properties → Tags):
 | `PoliceRelease` | Where busted players are released |
 | `StreetLight` | Lamps that switch on at night |
 
-Job point parts also carry a `District` attribute, and MapBuilder puts each in a Persistent model so the phone and GPS find it while the place streams. Road graph nodes have `Links`, `LinkKinds` and `District` attributes; police patrol beats use `District`.
+Map parts can carry a `Surface` attribute (`asphalt`, `dirt`, `grass`; unlabelled parts count as paved) that car physics and tire trails read; terrain goes by its material. Job point parts also carry a `District` attribute, and MapBuilder puts each in a Persistent model so the phone and GPS find it while the place streams. Road graph nodes have `Links`, `LinkKinds` and `District` attributes; police patrol beats use `District`.
 
 With no tagged points, `Config.Debug.SpawnTestPoints` creates a test pickup and dropoff so the loop works on an empty baseplate.
 
@@ -77,5 +79,6 @@ Everything is in `src/shared/Config.luau`:
 | Heat decay, unseen speeding, wanted threshold | `Heat.DecayPerSecond`, `SpeedingHeatPerSecond`, `SpeedingGraceSeconds`, `WantedThreshold` |
 | Contract tiers: drive time, payout, risk, cargo | `Jobs.Tiers`, `Jobs.RouteSpeeds` |
 | Contact reach and answer debounce | `Jobs.Contact` |
+| Off-road slowdown | `Vehicles.Offroad` |
 
 Contact lines, questions, decoy answers and code words are server-only, in `src/server/Jobs/ContactLines.luau`.

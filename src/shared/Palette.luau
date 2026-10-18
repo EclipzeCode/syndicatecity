@@ -12,8 +12,11 @@ local Palette = {
 	Sidewalk = rgb(200, 194, 182),
 	Curb = rgb(170, 164, 154),
 	Grass = rgb(112, 164, 82),
+	-- terrain grass renders darker than a part of the same color; this matches Grass on screen
+	TerrainGrass = rgb(150, 208, 112),
 	GrassDark = rgb(88, 138, 68),
 	Dirt = rgb(156, 122, 88),
+	Sand = rgb(232, 214, 162),
 	Water = rgb(64, 146, 196),
 	WaterDeep = rgb(40, 96, 150),
 	Wood = rgb(150, 108, 74),

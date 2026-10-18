@@ -67,6 +67,26 @@ function CarFactory.setHeadlights(car: Model, on: boolean)
 	end
 end
 
+-- Wheels and hubcaps hang off the chassis on Motor6Ds instead of welds, so clients can spin and
+-- steer them (CarEffectsController sets each motor's Transform). C0 is the wheel's position
+-- relative to the chassis with no rotation; C1 carries the part's own orientation, so a
+-- Transform about X spins it around the axle and one about Y steers it.
+local function wheelMotor(chassis: BasePart, p: BasePart, offset: CFrame, isFront: boolean, radius: number)
+	local motor = Instance.new("Motor6D")
+	motor.Name = "WheelMotor"
+	motor.Part0 = chassis
+	motor.Part1 = p
+	motor.C0 = CFrame.new(offset.Position)
+	motor.C1 = (offset - offset.Position):Inverse()
+	motor:SetAttribute("Front", isFront)
+	motor:SetAttribute("Radius", radius)
+	motor.Parent = p
+end
+
+local function isWheelPart(name: string): boolean
+	return string.sub(name, 1, 5) == "Wheel" or string.sub(name, 1, 6) == "Hubcap"
+end
+
 local function meshTemplate(vehicleType: string): Model?
 	local assets = ServerStorage:FindFirstChild("Assets")
 	local vehicles = assets and assets:FindFirstChild("Vehicles")
@@ -100,10 +120,15 @@ local function applyMeshes(model: Model, chassis: BasePart, template: Model, col
 		if p.Name == "Body" then
 			p.Color = color
 		end
-		local weld = Instance.new("WeldConstraint")
-		weld.Part0 = chassis
-		weld.Part1 = p
-		weld.Parent = p
+		if isWheelPart(p.Name) then
+			-- mesh wheels are named ...FL / FR / RL / RR
+			wheelMotor(chassis, p, source.CFrame, string.find(p.Name, "F", 6, true) ~= nil, source.Size.Y / 2)
+		else
+			local weld = Instance.new("WeldConstraint")
+			weld.Part0 = chassis
+			weld.Part1 = p
+			weld.Parent = p
+		end
 		p.Parent = model
 		if p.Name == "HeadlightR" then
 			addHeadlightBeam(p)
@@ -129,10 +154,14 @@ local function weldedPart(model: Model, chassis: BasePart, props: { [string]: an
 	end
 	local offset = props.CFrame or CFrame.new()
 	p.CFrame = chassis.CFrame * offset
-	local weld = Instance.new("WeldConstraint")
-	weld.Part0 = chassis
-	weld.Part1 = p
-	weld.Parent = p
+	if isWheelPart(p.Name) then
+		wheelMotor(chassis, p, offset, offset.Position.Z < 0, p.Size.Y / 2)
+	else
+		local weld = Instance.new("WeldConstraint")
+		weld.Part0 = chassis
+		weld.Part1 = p
+		weld.Parent = p
+	end
 	p.Parent = model
 	return p
 end
@@ -242,12 +271,13 @@ function CarFactory.build(vehicleType: string, color: Color3, cframe: CFrame): M
 		end
 	end
 
-	-- cargo sits on the rear deck (sedan) or behind the back window (van) so cops can spot it
+	-- cargo sits on the rear deck (sedan) or in the load bay (van), where cops can spot it through
+	-- the windows; the van's crate sits well inside the body so it doesn't poke out the back doors
 	weldedPart(model, chassis, {
 		Name = "CargoCrate",
 		Size = Vector3.new(3.4, 2.2, 3),
 		CFrame = if isVan
-			then CFrame.new(0, half.Y + 1.1, half.Z - 1.5)
+			then CFrame.new(0, half.Y + 1.1, half.Z - 4.5)
 			else CFrame.new(0, half.Y + 1.1, half.Z - 2),
 		Color = Palette.Wood,
 		Transparency = 1,

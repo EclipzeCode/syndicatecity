@@ -72,6 +72,13 @@ local Config = {
 	Vehicles = {
 		MphPerStud = 0.63,
 		SpawnCooldown = 5,
+		-- on grass, sand or in water: top speed and acceleration are multiplied by these (scaled by
+		-- how many wheels are off the road), and a faster car slows at up to Drag studs/s²
+		Offroad = {
+			SpeedFactor = 0.35,
+			AccelFactor = 0.6,
+			Drag = 45,
+		},
 		Types = {
 			Sedan = {
 				Size = Vector3.new(7.4, 2.4, 15),

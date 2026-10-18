@@ -1,7 +1,7 @@
 --!strict
 -- Mini car HUD, bottom left, shown while the local player sits in a car: an analog speedometer
--- (0-80 mph, red past the speed limit) with a digital readout, gear and indicator lights, and the
--- in-car controls underneath.
+-- (0-80 mph, red past the speed limit; the exact number is on the phone's GPS), gear and
+-- indicator lights, and the in-car controls underneath.
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -37,7 +37,7 @@ local function spoke(dial: Frame, angle: number): Frame
 	})
 end
 
-local function buildDial(parent: Instance): (Frame, TextLabel)
+local function buildDial(parent: Instance): Frame
 	local dial = Theme.new("Frame", {
 		Name = "Speedometer",
 		BackgroundColor3 = Color3.fromRGB(10, 11, 15),
@@ -92,24 +92,14 @@ local function buildDial(parent: Instance): (Frame, TextLabel)
 		Position = UDim2.fromScale(0.5, 0.5),
 		Parent = dial,
 	}, { Theme.corner(8), Theme.stroke(0.6) })
-
-	local digital = Theme.label({
-		Font = F.Heavy,
-		TextSize = 26,
-		TextXAlignment = Enum.TextXAlignment.Center,
-		Size = UDim2.fromOffset(80, 28),
-		AnchorPoint = Vector2.new(0.5, 0),
-		Position = UDim2.new(0.5, 0, 0.62, 0),
-		Parent = dial,
-	})
 	Theme.caption("mph", {
 		TextXAlignment = Enum.TextXAlignment.Center,
 		Size = UDim2.fromOffset(60, 12),
 		AnchorPoint = Vector2.new(0.5, 0),
-		Position = UDim2.new(0.5, 0, 0.62, 30),
+		Position = UDim2.new(0.5, 0, 0.66, 0),
 		Parent = dial,
 	})
-	return needle, digital
+	return needle
 end
 
 -- An indicator light: a dim chip that lights up in its color.
@@ -196,7 +186,7 @@ function CarHudController.init()
 
 	-- top: dial and indicator column
 	local top = Theme.new("Frame", { BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, DIAL_SIZE), LayoutOrder = 1, Parent = panel })
-	local needle, digital = buildDial(top)
+	local needle = buildDial(top)
 	local column = Theme.new("Frame", {
 		BackgroundTransparency = 1,
 		Size = UDim2.new(1, -(DIAL_SIZE + 12), 1, 0),
@@ -267,8 +257,6 @@ function CarHudController.init()
 		-- the needle eases toward the speed like a real gauge
 		shownAngle += (dialAngle(mph) - shownAngle) * math.min(1, dt * 10)
 		needle.Rotation = shownAngle
-		digital.Text = tostring(math.floor(mph + 0.5))
-		digital.TextColor3 = if over then C.Wanted else C.Text
 
 		local throttle = if state.seat:IsA("VehicleSeat") then state.seat.ThrottleFloat else 0
 		gear.Text = if forward < -1 or (throttle < 0 and forward < 1) then "R"

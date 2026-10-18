@@ -1,8 +1,11 @@
 --!strict
--- On-screen HUD: dirty cash, heat, police attention, wanted/bust state, objective, ammo, big
--- center banners and toast notifications. Reads Player attributes set by the server (DirtyCash,
--- Heat, PoliceAttention, Wanted, BustProgress, Reloading) and the equipped pistol's Ammo attribute. Driving info lives in
--- CarHudController and navigation in the phone's GPS app; nothing marks the world on screen.
+-- On-screen HUD: dirty cash, heat, police attention, wanted/bust state, objective and ammo. Reads
+-- Player attributes set by the server (DirtyCash, Heat, PoliceAttention, Wanted, BustProgress,
+-- Reloading) and the equipped pistol's Ammo attribute. Driving info lives in CarHudController and
+-- navigation in the phone's GPS app; nothing marks the world on screen.
+--
+-- Notifications (HudController.notify, and server "Notice" events) don't take over the screen:
+-- they pop up on the burner phone. PhoneController registers itself with setNotifier.
 
 local Players = game:GetService("Players")
 local SoundService = game:GetService("SoundService")
@@ -23,33 +26,26 @@ local HudController = {}
 local objective: Frame
 local objectiveDot: Frame
 local objectiveLabel: TextLabel
-local banner: TextLabel
-local bannerBackdrop: Frame
-local bannerVersion = 0
-local toastStack: Frame
-local toastOrder = 0
 
--- Toast kinds: accent color and the glyph in the icon chip.
-local TOASTS: { [string]: { color: Color3, icon: string } } = {
-	cash = { color = C.Cash, icon = "$" },
-	pickup = { color = C.Pickup, icon = "◆" },
-	dropoff = { color = C.Dropoff, icon = "◎" },
-	danger = { color = C.Danger, icon = "!" },
-	police = { color = C.Police, icon = "★" },
-	info = { color = C.Text, icon = "i" },
+-- `kind` picks the accent and icon (Theme.Notices); `big` is for moments that matter (BUSTED,
+-- WANTED, +$1,200) and shows the title large.
+export type Notifier = (kind: string, title: string, body: string?, seconds: number?, big: boolean?) -> ()
+
+local notifier: Notifier? = nil
+-- notifications sent before the phone was ready
+local pending: { { any } } = {}
+
+-- Server notices (Remotes "Notice") that deserve a big headline.
+local NOTICES: { [string]: { title: string, kind: string } } = {
+	busted = { title = "BUSTED", kind = "police" },
+	wanted = { title = "WANTED", kind = "danger" },
+	ko = { title = "KNOCKED OUT", kind = "danger" },
 }
 
--- Server notices (Remotes "Notice"): a big banner word plus a toast with the details.
-local NOTICES: { [string]: { banner: string, color: Color3, toast: string } } = {
-	busted = { banner = "BUSTED", color = C.Police, toast = "police" },
-	wanted = { banner = "WANTED", color = C.Wanted, toast = "danger" },
-	ko = { banner = "KNOCKED OUT", color = C.Text, toast = "danger" },
-}
-
--- Quieter server notices: a toast only, no banner.
-local QUIET_NOTICES: { [string]: { toast: string, title: string } } = {
-	tailed = { toast = "police", title = "You're being followed" },
-	clear = { toast = "info", title = "Tail's gone" },
+-- Quieter server notices.
+local QUIET_NOTICES: { [string]: { kind: string, title: string } } = {
+	tailed = { kind = "police", title = "You're being followed" },
+	clear = { kind = "info", title = "Tail's gone" },
 }
 
 -- An optional radio chirp when a patrol starts tailing you (Config.Police.Detection.RadioSoundId).
@@ -68,102 +64,28 @@ local function playRadio()
 end
 
 ---------------------------------------------------------------------------------------------------
--- Toasts
+-- Notifications
 ---------------------------------------------------------------------------------------------------
 
--- Slides a card in at the top right; it leaves on its own after `seconds`.
-function HudController.toast(kind: string, title: string, body: string?, seconds: number?)
-	local style = TOASTS[kind] or TOASTS.info
-	toastOrder += 1
-
-	-- the holder keeps the list layout steady while the card slides inside it
-	local holder = Theme.new("Frame", {
-		Name = "Toast",
-		LayoutOrder = -toastOrder,
-		BackgroundTransparency = 1,
-		Size = UDim2.new(1, 0, 0, if body and body ~= "" then 62 else 44),
-		ClipsDescendants = false,
-		Parent = toastStack,
-	})
-	local card = Theme.panel({
-		Size = UDim2.fromScale(1, 1),
-		Position = UDim2.new(1, 24, 0, 0),
-		Parent = holder,
-	})
-	Theme.new("Frame", {
-		Name = "Accent",
-		BackgroundColor3 = style.color,
-		BorderSizePixel = 0,
-		Size = UDim2.new(0, 4, 1, -16),
-		Position = UDim2.fromOffset(0, 8),
-		Parent = card,
-	}, { Theme.corner(2) })
-	local chip = Theme.new("Frame", {
-		BackgroundColor3 = style.color,
-		BackgroundTransparency = 0.8,
-		BorderSizePixel = 0,
-		Size = UDim2.fromOffset(28, 28),
-		AnchorPoint = Vector2.new(0, 0.5),
-		Position = UDim2.new(0, 14, 0.5, 0),
-		Parent = card,
-	}, { Theme.corner(14) })
-	Theme.label({
-		Text = style.icon,
-		Font = F.Heavy,
-		TextSize = 15,
-		TextColor3 = style.color,
-		TextXAlignment = Enum.TextXAlignment.Center,
-		Size = UDim2.fromScale(1, 1),
-		Parent = chip,
-	})
-	local hasBody = body ~= nil and body ~= ""
-	Theme.label({
-		Text = title,
-		Font = F.Bold,
-		TextSize = 15,
-		TextTruncate = Enum.TextTruncate.AtEnd,
-		Size = UDim2.new(1, -60, 0, 20),
-		Position = UDim2.fromOffset(52, if hasBody then 10 else 12),
-		Parent = card,
-	})
-	if hasBody then
-		Theme.label({
-			Text = body,
-			TextSize = 13,
-			TextColor3 = C.TextDim,
-			TextTruncate = Enum.TextTruncate.AtEnd,
-			Size = UDim2.new(1, -60, 0, 18),
-			Position = UDim2.fromOffset(52, 32),
-			Parent = card,
-		})
-	end
-
-	TweenService:Create(card, TweenInfo.new(0.3, Enum.EasingStyle.Quint), { Position = UDim2.new() }):Play()
-	task.delay(seconds or 4, function()
-		local out = TweenService:Create(card, TweenInfo.new(0.25, Enum.EasingStyle.Quint, Enum.EasingDirection.In), {
-			Position = UDim2.new(1, 24, 0, 0),
-		})
-		out:Play()
-		out.Completed:Wait()
-		holder:Destroy()
-	end)
-	-- keep the stack short
-	local toasts = {}
-	for _, child in toastStack:GetChildren() do
-		if child.Name == "Toast" then
-			table.insert(toasts, child)
-		end
-	end
-	table.sort(toasts, function(a, b)
-		return (a :: Frame).LayoutOrder < (b :: Frame).LayoutOrder
-	end)
-	for i = 5, #toasts do
-		toasts[i]:Destroy()
+-- Pops a notification up on the phone; it goes away on its own after `seconds`.
+function HudController.notify(kind: string, title: string, body: string?, seconds: number?, big: boolean?)
+	if notifier then
+		notifier(kind, title, body, seconds, big)
+	else
+		table.insert(pending, { kind, title, body, seconds, big })
 	end
 end
 
+function HudController.setNotifier(fn: Notifier)
+	notifier = fn
+	for _, args in pending do
+		fn(table.unpack(args))
+	end
+	table.clear(pending)
+end
+
 ---------------------------------------------------------------------------------------------------
--- Objective, banner
+-- Objective
 ---------------------------------------------------------------------------------------------------
 
 -- `kind` colors the dot: "pickup", "dropoff", or nothing for neutral.
@@ -173,42 +95,21 @@ function HudController.setObjective(text: string, kind: string?)
 	objectiveDot.BackgroundColor3 = if kind == "pickup" then C.Pickup elseif kind == "dropoff" then C.Dropoff else C.TextDim
 end
 
--- A big centred word for moments that matter (BUSTED, WANTED, +$1,200).
-function HudController.showBanner(text: string, color: Color3?)
-	bannerVersion += 1
-	local version = bannerVersion
-	banner.Text = text
-	banner.TextColor3 = color or C.Text
-	banner.TextTransparency = 0
-	banner.TextStrokeTransparency = 0.6
-	bannerBackdrop.BackgroundTransparency = 0.45
-	banner.Size = UDim2.new(1, 0, 0, 44)
-	TweenService:Create(banner, TweenInfo.new(0.3, Enum.EasingStyle.Back), { Size = UDim2.new(1, 0, 0, 60) }):Play()
-	task.delay(2.6, function()
-		if bannerVersion == version then
-			local fade = TweenInfo.new(0.6)
-			TweenService:Create(banner, fade, { TextTransparency = 1, TextStrokeTransparency = 1 }):Play()
-			TweenService:Create(bannerBackdrop, fade, { BackgroundTransparency = 1 }):Play()
-		end
-	end)
-end
-
 local function onNotice(kind: string, text: string)
 	local notice = NOTICES[kind]
 	local quiet = QUIET_NOTICES[kind]
 	if quiet then
-		HudController.toast(quiet.toast, quiet.title, text, 5)
+		HudController.notify(quiet.kind, quiet.title, text, 5)
 		if kind == "tailed" then
 			playRadio()
 		end
 	elseif notice then
-		HudController.showBanner(notice.banner, notice.color)
-		-- server texts lead with the headline ("BUSTED! Fined $200…"); the toast title has it already
+		-- server texts lead with the headline ("BUSTED! Fined $200…"); the title has it already
 		local lead, rest = string.match(text, "^([^!]+)!%s*(.+)$")
 		local body = if lead and #lead <= 14 then rest else text
-		HudController.toast(notice.toast, notice.banner, body, 6)
+		HudController.notify(notice.kind, notice.title, body, 6, true)
 	else
-		HudController.toast("info", text)
+		HudController.notify("info", text)
 	end
 end
 
@@ -297,46 +198,6 @@ function HudController.init()
 	})
 	objectiveDot = Theme.new("Frame", { BorderSizePixel = 0, Size = UDim2.fromOffset(10, 10), LayoutOrder = 1, Parent = objective }, { Theme.corner(5) })
 	objectiveLabel = Theme.label({ Font = F.Bold, TextSize = 16, AutomaticSize = Enum.AutomaticSize.X, Size = UDim2.fromOffset(0, 40), LayoutOrder = 2, Parent = objective })
-
-	-- centre banner on a soft dark strip
-	bannerBackdrop = Theme.new("Frame", {
-		BackgroundColor3 = Color3.new(0, 0, 0),
-		BackgroundTransparency = 1,
-		BorderSizePixel = 0,
-		Size = UDim2.new(1, 0, 0, 84),
-		Position = UDim2.new(0, 0, 0.3, -12),
-		Parent = gui,
-	}, {
-		Theme.new("UIGradient", {
-			Transparency = NumberSequence.new({
-				NumberSequenceKeypoint.new(0, 1),
-				NumberSequenceKeypoint.new(0.3, 0),
-				NumberSequenceKeypoint.new(0.7, 0),
-				NumberSequenceKeypoint.new(1, 1),
-			}),
-		}),
-	})
-	banner = Theme.label({
-		Font = F.Heavy,
-		TextScaled = true,
-		TextXAlignment = Enum.TextXAlignment.Center,
-		TextTransparency = 1,
-		TextStrokeTransparency = 1,
-		Size = UDim2.new(1, 0, 0, 60),
-		Position = UDim2.fromScale(0, 0.3),
-		Parent = gui,
-	})
-
-	-- toast stack, top right
-	toastStack = Theme.new("Frame", {
-		Name = "Toasts",
-		BackgroundTransparency = 1,
-		Size = UDim2.fromOffset(300, 400),
-		AnchorPoint = Vector2.new(1, 0),
-		Position = UDim2.new(1, -16, 0, 16),
-		Parent = gui,
-	})
-	Theme.new("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 8), Parent = toastStack })
 
 	-- ammo, bottom right above the phone button
 	local ammo = Theme.panel({

@@ -255,7 +255,7 @@ function ContactController.init()
 		elseif action == "close" then
 			ContactController.close(false)
 			if typeof(payload) == "string" and payload ~= "" then
-				HudController.toast("info", payload)
+				HudController.notify("info", payload)
 			end
 		end
 	end)
