@@ -69,6 +69,12 @@ SURFACES = {
     "Headlight": (0.3, 0.0, 2.0),
     "Taillight": (0.3, 0.0, 2.0),
     "PoliceNavy": (0.35, 0.0, 0.0),
+    "Wall": (0.8, 0.0, 0.0),
+    "Concrete": (0.85, 0.0, 0.0),
+    "Roof": (0.9, 0.0, 0.0),
+    "Frame": (0.5, 0.0, 0.0),
+    "Accent": (0.7, 0.0, 0.0),
+    "Metal": (0.45, 0.3, 0.0),
     # sirens stay unlit here; EffectsController lights them in game
     "SirenRed": (0.2, 0.0, 0.0),
     "SirenBlue": (0.2, 0.0, 0.0),
@@ -81,14 +87,15 @@ def _srgb_to_linear(c):
     return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
 
 
-def material(name, color=None):
-    """Return the shared material `name`, creating it from PALETTE/SURFACES the first time."""
+def material(name, color=None, surface=None):
+    """Return the material `name`, colored from PALETTE (or `color`) with the SURFACES finish
+    of `surface` (default: `name`)."""
     mat = bpy.data.materials.get(name)
     if mat is None:
         mat = bpy.data.materials.new(name)
         mat.use_nodes = True
     color = color or PALETTE.get(name, (1, 1, 1))
-    rough, metal, emit = SURFACES.get(name, (0.5, 0.0, 0.0))
+    rough, metal, emit = SURFACES.get(surface or name, (0.5, 0.0, 0.0))
     linear = tuple(_srgb_to_linear(c) for c in color) + (1.0,)
     bsdf = next(n for n in mat.node_tree.nodes if n.type == "BSDF_PRINCIPLED")
     bsdf.inputs["Base Color"].default_value = linear
@@ -248,11 +255,11 @@ def export_fbx(coll, filename):
     axis_forward names the target axis Blender's +Y maps to, so "Z" (not "-Z") is what puts a
     vehicle's -Y front at Roblox -Z.
     """
-    os.makedirs(EXPORT_DIR, exist_ok=True)
     path = os.path.join(EXPORT_DIR, filename)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
     bpy.ops.object.select_all(action="DESELECT")
-    for obj in coll.all_objects:
-        if obj.type == "MESH" and not obj.hide_render:
+    for obj in coll.objects:
+        if obj and obj.type == "MESH" and not obj.hide_render:
             obj.hide_viewport = False
             obj.select_set(True)
     bpy.ops.export_scene.fbx(
