@@ -3,8 +3,10 @@
 Every asset script imports this module so models share one look and one set of conventions:
 
 - Units: 1 Blender unit = 1 Roblox stud. Sizes come straight from src/shared/Config.luau.
-- Axes: Blender +Z is up and -Y is the front of a vehicle. On export, Blender -Y becomes
-  Roblox -Z (LookVector), matching CarFactory, where headlights sit at -Z.
+- Axes: Blender +Z is up and -Y is the front of a vehicle, so the vehicle's left is +X. Export
+  turns the model 180 degrees about up: Blender -Y becomes Roblox -Z (LookVector, where
+  CarFactory puts the headlights) and Blender +X becomes Roblox -X (CarFactory's left side).
+  Name sides by the vehicle's own left/right (L = +X), never by the Blender axis.
 - Origin: a vehicle's origin is the centre of its v0.1 Chassis part, so meshes line up with the
   chassis CFrame when welded in Roblox.
 - One material per object. Roblox imports each object as one MeshPart and colors it with
@@ -66,6 +68,10 @@ SURFACES = {
     "Hubcap": (0.3, 0.6, 0.0),
     "Headlight": (0.3, 0.0, 2.0),
     "Taillight": (0.3, 0.0, 2.0),
+    "PoliceNavy": (0.35, 0.0, 0.0),
+    # sirens stay unlit here; EffectsController lights them in game
+    "SirenRed": (0.2, 0.0, 0.0),
+    "SirenBlue": (0.2, 0.0, 0.0),
 }
 
 BEVEL = 0.12  # studs; keeps silhouettes soft without adding many faces
@@ -237,7 +243,11 @@ def preview_setup(target_size=16.0):
 
 
 def export_fbx(coll, filename):
-    """Export one collection as FBX for Roblox's 3D importer (Y up, -Z forward)."""
+    """Export one collection as FBX for Roblox's 3D importer: Y up, Blender -Y -> Roblox -Z.
+
+    axis_forward names the target axis Blender's +Y maps to, so "Z" (not "-Z") is what puts a
+    vehicle's -Y front at Roblox -Z.
+    """
     os.makedirs(EXPORT_DIR, exist_ok=True)
     path = os.path.join(EXPORT_DIR, filename)
     bpy.ops.object.select_all(action="DESELECT")
@@ -251,7 +261,7 @@ def export_fbx(coll, filename):
         object_types={"EMPTY", "MESH"},
         apply_unit_scale=True,
         apply_scale_options="FBX_SCALE_ALL",
-        axis_forward="-Z",
+        axis_forward="Z",
         axis_up="Y",
         mesh_smooth_type="FACE",
         use_mesh_modifiers=True,
