@@ -48,7 +48,7 @@ def describe(mat):
     color = [round(linear_to_srgb(c) * 255) for c in bsdf.inputs["Base Color"].default_value[:3]]
     if bsdf.inputs["Emission Strength"].default_value > 0:
         kind = "neon"
-    elif bsdf.inputs["Roughness"].default_value <= 0.1:
+    elif bsdf.inputs["Roughness"].default_value < 0.15:  # glass is 0.1, stored as 0.100000001
         kind = "glass"
     else:
         kind = "solid"

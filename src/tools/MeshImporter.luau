@@ -181,6 +181,8 @@ local function styleTemplatePart(mp: MeshPart, part: PartData, isBuilding: boole
 	mp.Color = Color3.fromRGB(part.color[1], part.color[2], part.color[3])
 	mp.Material = if part.kind == "neon" then Enum.Material.Neon else Enum.Material.SmoothPlastic
 	mp.Reflectance = if part.kind == "glass" then 0.15 else 0
+	-- glass is single panes: draw both sides so it reads from inside the car and never vanishes
+	mp.DoubleSided = part.kind == "glass"
 	mp.CastShadow = part.kind == "solid"
 	mp.CanCollide = fidelity ~= nil
 	mp.CanTouch = fidelity ~= nil

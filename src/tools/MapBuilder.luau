@@ -897,18 +897,22 @@ local function buildIndustrial(map: Instance)
 	end
 
 	-- dock quay between the east road and the water
+	local quayX, quayWidth = 700, 70
 	part(industrial, {
 		Name = "Quay",
-		Size = Vector3.new(70, 2, 1200),
-		Position = Vector3.new(700, SIDEWALK_TOP - 1, -80),
+		Size = Vector3.new(quayWidth, 2, 1200),
+		Position = Vector3.new(quayX, SIDEWALK_TOP - 1, -80),
 		Color = Palette.Curb,
 		CastShadow = false,
 	})
+	-- piers start exactly at the quay's edge: overlapping it with the same top height made the
+	-- two surfaces z-fight
+	local pierStart, pierEnd = quayX + quayWidth / 2, 850
 	for _, z in { -400, -160, 80 } do
 		part(industrial, {
 			Name = "Pier",
-			Size = Vector3.new(120, 1.5, 24),
-			Position = Vector3.new(790, SIDEWALK_TOP - 0.75, z),
+			Size = Vector3.new(pierEnd - pierStart, 1.5, 24),
+			Position = Vector3.new((pierStart + pierEnd) / 2, SIDEWALK_TOP - 0.75, z),
 			Color = Palette.Wood,
 		})
 		for px = 740, 840, 25 do

@@ -123,21 +123,25 @@ class Glass:
         for a, b in spans:
             def x(s, xs):
                 return xs * s if abs(s) == 1 else s
-            self.quad([
+            pts = [
                 (x(a, xs_lo), y_of(z_lo) + push, z_lo),
                 (x(b, xs_lo), y_of(z_lo) + push, z_lo),
                 (x(b, xs_hi), y_of(z_hi) + push, z_hi),
                 (x(a, xs_hi), y_of(z_hi) + push, z_hi),
-            ])
+            ]
+            # this order faces -Y (forward); the rear window has to face +Y
+            self.quad(pts if front else list(reversed(pts)))
 
     def side_window(self, window):
-        """window = [(y, z), ...] on the side, mirrored to both sides."""
+        """window = [(y, z), ...] running front to back along the bottom edge, mirrored to both
+        sides; wound to face outward (+X, then reversed for -X)."""
         for sx in (-1, 1):
             pts = [(sx * self.side_x(z), y, z) for y, z in window]
             self.quad(pts if sx > 0 else list(reversed(pts)))
 
     def build(self):
-        bmesh.ops.recalc_face_normals(self.bm, faces=self.bm.faces)
+        # Every pane is wound outward above. Don't recalc normals: on lone quads it picks a side
+        # at random, and Roblox doesn't draw the back of a face, so flipped panes vanish.
         return self.d.part("Windows", self.bm, "Glass")
 
 

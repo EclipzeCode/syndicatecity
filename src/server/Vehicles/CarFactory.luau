@@ -259,11 +259,13 @@ function CarFactory.build(vehicleType: string, color: Color3, cframe: CFrame): M
 		end
 	end
 
-	-- seats sit inside the chassis top so the character's upper body shows through the cabin
+	-- Seats sit low in the chassis so a seated R15 character's head (about 3.5 studs above the seat
+	-- top) clears the mesh roof, and close enough to the middle that the arms stay inside the glass.
+	local seatX, seatY = 1.1, half.Y - 1.3
 	local seat = Instance.new("VehicleSeat")
 	seat.Name = "DriverSeat"
 	seat.Size = Vector3.new(2, 0.4, 2)
-	seat.CFrame = chassis.CFrame * CFrame.new(-1.4, half.Y - 0.6, cabinOffsetZ - 0.5)
+	seat.CFrame = chassis.CFrame * CFrame.new(-seatX, seatY, cabinOffsetZ - 0.5)
 	seat.Transparency = 1
 	seat.CanCollide = false
 	seat.CanTouch = false
@@ -281,7 +283,7 @@ function CarFactory.build(vehicleType: string, color: Color3, cframe: CFrame): M
 		local passenger = Instance.new("Seat")
 		passenger.Name = "PassengerSeat"
 		passenger.Size = Vector3.new(2, 0.4, 2)
-		passenger.CFrame = chassis.CFrame * CFrame.new(1.4, half.Y - 0.6, cabinOffsetZ - 0.5)
+		passenger.CFrame = chassis.CFrame * CFrame.new(seatX, seatY, cabinOffsetZ - 0.5)
 		passenger.Transparency = 1
 		passenger.CanCollide = false
 		passenger.CanTouch = false
