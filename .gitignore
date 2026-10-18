@@ -13,3 +13,7 @@ sourcemap.json
 # OS / editor
 .DS_Store
 Thumbs.db
+
+# Blender backups / Python cache
+*.blend1
+__pycache__/
