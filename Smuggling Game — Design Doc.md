@@ -303,11 +303,77 @@ The goal is a fun game that covers its own costs, not maximum revenue, so nothin
 - No real-world gang names or symbols.
 - Filter all user-created text (syndicate names, role names, messages) with `TextService`.
 
+## v0.1 — what's built
+
+v0.1 is built and playable: a full island map, tiered contracts with an NPC handoff, ambient police running a suspicion system, civilian traffic, and a cartoon art pass across the cars, buildings, terrain, sky and water. Everything below exists in the Studio place today and is covered by an automated test suite.
+
+### Map
+
+The single downtown district this doc called for grew into an island with three districts, linked by a highway and two alternate routes so a route is a real trade-off.
+
+| District | What's there |
+| --- | --- |
+| Downtown | Street grid, the police station, most patrol beats |
+| Industrial + docks | Warehouses, rail yard, container yard, quay, lighthouse |
+| Outskirts | Woods, hills, farmland, cabins, a quarry, an airstrip, a water tower |
+
+The coastline tapers into sand beaches and open sea, roads cross the river on bridges, and a road graph drives both the police AI and the phone's GPS.
+
+### Contracts and cargo
+
+The contract board, pickup and delivery loop runs end to end, built out further than this doc's plan for v0.1:
+
+- Contracts come in three tiers (Routine, Standard, High-value), rolled by the estimated drive time between pickup and dropoff
+- Pickup is an NPC contact and a passcode challenge instead of a glowing pad; the correct code is checked server-side
+- Delivery pays a flat payout on drop-off
+
+The richer payment types this doc describes (upfront, disclosed, undisclosed, items, scams) aren't built yet — every contract pays the same way for now, planned for v0.2.
+
+### Police
+
+This doc's short-term **heat** is now a full state machine, further than planned for v0.1:
+
+- Patrol cars work fixed beats per district, active even with no heat anywhere on the map
+- A suspicion module runs each encounter through Patrolling → Observing → Investigating → Pursuing → Returning
+- Suspicion builds from speeding in view of a patrol, carrying visible cargo, ramming a patrol car, or blocking one
+- Wanted players are chased and can be busted as before; headlights switch on only at night
+
+Long-term **evidence**, investigation files and arrest/interrogation (confess, play dumb, stay silent) aren't built — still planned for v0.3.
+
+### Traffic
+
+Civilian cars share the police cars' driving logic: they keep to a lane, brake for anything ahead, pull around something that won't move, and stop briefly if rammed — without ever getting suspicious. Not part of this design doc; added to make the roads feel alive.
+
+### Vehicles and driving
+
+Sedan, Van and Police cars use arcade raycast suspension with animated, steering wheels. Top speed drops off the road (grass, sand), and tire tracks and dust trail behind a car depending on the surface.
+
+### World and art
+
+A cartoon pass across the whole map: a sun, moon and clouds drawn as flat billboards; flat-shaded terrain and roads; animated water with rolling wave crests; and a low-poly Blender prop kit (trees, rocks, grass, bushes) plus landmark buildings — a cabin, a barn, a silo, a lighthouse, a water tower, a hangar — in the same style as the cars.
+
+### Burner phone and HUD
+
+The burner phone is the one source for contracts, GPS navigation and now notifications, which pop up on the phone instead of a center-screen banner. The HUD still tracks cash, heat and police attention; the speedometer shows no number — only the phone's GPS does.
+
+### Testing
+
+A Studio test suite (`Debug:Invoke("test")`) covers the suspicion rules, the pickup handoff's exploit paths and police-encounter transitions: over 100 checks, run twice in a row for stability before each change ships.
+
+### Not yet built from this doc
+
+- Payment types beyond a flat payout (upfront, disclosed, undisclosed, items, scams)
+- Evidence, investigation files, arrest and interrogation
+- Dirty/clean money, laundering, the black market
+- Solo progression: reputation, smuggler rank, perks
+- Everything under Player syndicates and Hideouts
+- Persistent player saves (ProfileStore) — player state currently resets each session
+
 ## Roadmap
 
 &#91;embedded content: roadmap · 3 phases, 9 releases\]
 
-v0.1 is the current focus. If driving cargo past police isn't fun on its own, fix that before adding any later system.
+v0.1 is built and playable — see "v0.1 — what's built" above. v0.2's economy and payment types are next; fix the core loop further before adding any later system.
 
 ## Open questions
 
