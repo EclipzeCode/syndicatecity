@@ -325,6 +325,11 @@ local TILE_TOP = 1
 -- tiles sit this hair above the (invisible) road Parts cars drive on, so they never z-fight the
 -- plain asphalt left showing round the junctions
 local TILE_LIFT = 0.02
+-- the visible junction disc and the corner pads round a disc junction sit this far under the
+-- road surface (and so under the tiles), far enough apart that they don't flicker into each
+-- other at a distance
+local JOINT_DROP = 0.08
+local PAD_DROP = 0.16
 -- RoadCurve's centreline radius, round its origin
 local CURVE_RADIUS = 36
 
@@ -414,7 +419,8 @@ local function tileEdge(parent: Instance, edge: Edge, joints: { [string]: Joint 
 		-- from a quarter width behind the node to just under the first tile
 		local from, to = -width / 4, math.min(trim + 0.5, total / 2)
 		local mid = origin + d * ((from + to) / 2)
-		local at = Vector3.new(mid.X, top - 0.5, mid.Z)
+		-- below both the tiles and the junction disc (see JOINT_DROP), so nothing is coplanar
+		local at = Vector3.new(mid.X, top - PAD_DROP - 0.5, mid.Z)
 		part(parent, {
 			Name = "RoadPad",
 			Size = Vector3.new(width, 1, to - from),
@@ -561,6 +567,22 @@ local function buildRoads(map: Instance)
 		if joint and joint.style ~= "disc" then
 			junction.Transparency = 1
 			tileJoint(roads, n, joint)
+		elseif joint then
+			-- with tiles, the disc that shows is a separate, lower copy: the driving disc's top
+			-- is within a hair of the tiles and the corner pads, and coplanar faces flicker
+			junction.Transparency = 1
+			local top = ROAD_TOP + KIND_LIFT[kind] - JOINT_DROP
+			part(roads, {
+				Name = "JunctionTop",
+				Shape = Enum.PartType.Cylinder,
+				Size = Vector3.new(1, width, width),
+				CFrame = CFrame.new(n.position.X, top - 0.5, n.position.Z) * CFrame.Angles(0, 0, math.rad(90)),
+				Color = junction.Color,
+				CanCollide = false,
+				CanQuery = false,
+				CanTouch = false,
+				CastShadow = false,
+			})
 		end
 	end
 	flush(roads, map)

@@ -1,5 +1,6 @@
 --!strict
--- On-foot movement: hold Left Shift (or click the left stick on a gamepad) to sprint.
+-- On-foot movement: hold Left Shift (or click the left stick on a gamepad) to sprint. Players
+-- who turn Shift Lock on in the Roblox settings use Shift for that, so they sprint with Left Ctrl.
 -- The client owns its character, so it sets WalkSpeed directly. It only switches between the
 -- walk and sprint speeds: when the server sets anything else (0 while being busted), sprinting
 -- leaves it alone.
@@ -31,7 +32,24 @@ local function apply()
 	humanoid.WalkSpeed = if sprintHeld then SPRINT else WALK
 end
 
-local function onSprint(_: string, state: Enum.UserInputState, _: InputObject): Enum.ContextActionResult
+local gameSettings = UserSettings():GetService("UserGameSettings")
+
+-- Whether this player has Shift Lock switched on (Shift then toggles the camera lock).
+local function shiftLockOn(): boolean
+	return gameSettings.ControlMode == Enum.ControlMode.MouseLockSwitch
+end
+
+local function onSprint(_: string, state: Enum.UserInputState, input: InputObject): Enum.ContextActionResult
+	-- Shift belongs to Shift Lock when it's on; Ctrl only sprints when it is
+	local shift = input.KeyCode == Enum.KeyCode.LeftShift
+	local ctrl = input.KeyCode == Enum.KeyCode.LeftControl
+	if (shift and shiftLockOn()) or (ctrl and not shiftLockOn()) then
+		if sprintHeld and state ~= Enum.UserInputState.Begin then
+			sprintHeld = false
+			apply()
+		end
+		return Enum.ContextActionResult.Pass
+	end
 	if state == Enum.UserInputState.Begin then
 		sprintHeld = true
 	elseif state == Enum.UserInputState.End or state == Enum.UserInputState.Cancel then
@@ -54,10 +72,10 @@ local function onCharacter(character: Model)
 	end)
 end
 
--- Shift Lock is off for this game (StarterPlayer.EnableMouseLockOption in default.project.json),
--- so Left Shift only sprints.
+-- Shift Lock is allowed (StarterPlayer.EnableMouseLockOption in default.project.json); see onSprint
+-- for how Shift is shared with it.
 function MovementController.init()
-	ContextActionService:BindAction("Sprint", onSprint, false, Enum.KeyCode.LeftShift, Enum.KeyCode.ButtonL3)
+	ContextActionService:BindAction("Sprint", onSprint, false, Enum.KeyCode.LeftShift, Enum.KeyCode.LeftControl, Enum.KeyCode.ButtonL3)
 	player.CharacterAdded:Connect(onCharacter)
 	if player.Character then
 		task.spawn(onCharacter, player.Character)

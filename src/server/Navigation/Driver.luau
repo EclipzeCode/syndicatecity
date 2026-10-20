@@ -18,6 +18,8 @@ local VehicleService = require(script.Parent.Parent.Services.VehicleService)
 local DRIVING = Config.Driving
 local LANE_OFFSET = 9
 local ARRIVE_DISTANCE = 22
+-- leaving a junction, cars first make for their lane this far down the new road
+local JUNCTION_EXIT = 26
 
 local Driver = {}
 
@@ -47,6 +49,8 @@ export type State = {
 	blockedBy: Obstacle?,
 	blockedFor: number,
 	passUntil: number,
+	-- what it's going around
+	passing: Instance?,
 	lastVelocity: Vector3,
 	lastVelocityAt: number,
 	lastImpact: Impact?,
@@ -77,6 +81,7 @@ function Driver.new(car: Model, from: string?, to: string): State
 		blockedBy = nil,
 		blockedFor = 0,
 		passUntil = 0,
+		passing = nil,
 		lastVelocity = Vector3.zero,
 		lastVelocityAt = 0,
 		lastImpact = nil,
@@ -151,6 +156,94 @@ function Driver.obstacleAhead(state: State, speed: number, ignore: { [Instance]:
 	return best, bestObstacle
 end
 
+-- A stable number per car, to break ties at a crossing the same way for both cars.
+local tieBreak: { [Instance]: number } = setmetatable({}, { __mode = "k" }) :: any
+local nextTieBreak = 0
+local function tieId(instance: Instance): number
+	local id = tieBreak[instance]
+	if not id then
+		nextTieBreak += 1
+		id = nextTieBreak
+		tieBreak[instance] = id
+	end
+	return id
+end
+
+-- Whether a strip of road is free of other cars and people: `offset` studs to the side of this
+-- car (negative is left), from `from` to `to` studs ahead (negative is behind). `except` is
+-- left out (the car being passed).
+local function stripClear(state: State, offset: number, from: number, to: number, except: Instance?): boolean
+	local cf = state.chassis.CFrame
+	for _, obstacle in obstacles do
+		if obstacle.instance == state.car or obstacle.instance == except then
+			continue
+		end
+		local rel = cf:PointToObjectSpace(obstacle.position)
+		local ahead = -rel.Z
+		if math.abs(rel.X - offset) < DRIVING.LaneHalfWidth and ahead > from and ahead < to and math.abs(rel.Y) < 12 then
+			return false
+		end
+	end
+	return true
+end
+
+-- Crossing traffic: another car whose path crosses this one's in the next few seconds. Whichever
+-- would get to the crossing later gives way (and AI cars always give way to players). Returns
+-- how far ahead the crossing is and the car to give way to, or nil when there's nothing to wait
+-- for. Cars going the same or the opposite way are left to the lane checks.
+local CONFLICT_HORIZON = 3
+local CONFLICT_SEPARATION = 1.5
+local function crossingAhead(state: State, speed: number, intended: number, ignore: { [Instance]: boolean }?): (number, Obstacle?)
+	local cf = state.chassis.CFrame
+	local look = Vector3.new(cf.LookVector.X, 0, cf.LookVector.Z)
+	if look.Magnitude < 0.1 then
+		return math.huge, nil
+	end
+	local u = look.Unit
+	local p = cf.Position
+	-- a car waiting at a junction still checks as if it were about to go
+	local ourSpeed = math.max(speed, math.min(intended, 12), 6)
+	local best, bestObstacle = math.huge, nil
+	for _, obstacle in obstacles do
+		-- cars only (people on foot are handled by the lane check)
+		if obstacle.instance == state.car or (ignore and ignore[obstacle.instance]) or obstacle.radius < 2 then
+			continue
+		end
+		local w = Vector3.new(obstacle.velocity.X, 0, obstacle.velocity.Z)
+		local theirSpeed = w.Magnitude
+		if theirSpeed < 3 then
+			continue
+		end
+		local h = w / theirSpeed
+		if math.abs(u:Dot(h)) > 0.8 then
+			continue
+		end
+		-- where the two paths cross: p + u * s = q + h * t
+		local d = obstacle.position - p
+		local denom = u.X * h.Z - u.Z * h.X
+		local s = (d.X * h.Z - d.Z * h.X) / denom
+		local t = (d.X * u.Z - d.Z * u.X) / denom
+		-- already in the crossing (keep going to clear it), it's past it, or it's far away
+		if s < 5 or t < -6 or s > 70 then
+			continue
+		end
+		local ourTime = s / ourSpeed
+		local theirTime = math.max(t, 0) / theirSpeed
+		if ourTime > CONFLICT_HORIZON or theirTime > CONFLICT_HORIZON or math.abs(ourTime - theirTime) > CONFLICT_SEPARATION then
+			continue
+		end
+		-- a car already in the crossing has it, however slow it is
+		local giveWay = obstacle.player ~= nil
+			or t < 8
+			or ourTime > theirTime + 0.15
+			or (math.abs(ourTime - theirTime) <= 0.15 and tieId(state.car) > tieId(obstacle.instance))
+		if giveWay and s < best then
+			best, bestObstacle = s, obstacle
+		end
+	end
+	return best, bestObstacle
+end
+
 -- Watches for a hard knock (a sudden change of velocity) with a player's car close by and
 -- coming this way, and records who did it in state.lastImpact.
 local function checkImpact(state: State, now: number)
@@ -186,8 +279,14 @@ function Driver.drive(state: State, target: Vector3, desiredSpeed: number, dt: n
 	local cf = state.chassis.CFrame
 	local speed = state.chassis.AssemblyLinearVelocity:Dot(cf.LookVector)
 
-	-- going around something: aim a lane over to the left and keep it slow
-	if now < state.passUntil then
+	-- going around something: aim a lane over to the left and keep it slow, and give up the
+	-- moment anything comes the other way in that lane
+	local passing = now < state.passUntil
+	if passing and not stripClear(state, -LANE_OFFSET * 1.2, -2, DRIVING.PassLookAhead, state.passing) then
+		state.passUntil = now
+		passing = false
+	end
+	if passing then
 		target += -cf.RightVector * LANE_OFFSET * 1.2
 		desiredSpeed = math.min(desiredSpeed, DRIVING.PassSpeed)
 	end
@@ -197,8 +296,12 @@ function Driver.drive(state: State, target: Vector3, desiredSpeed: number, dt: n
 	local steer = math.clamp(angle * 2.2, -1, 1)
 
 	if now < state.reverseUntil then
-		VehicleService.setAIInput(state.car, { throttle = -1, steer = -steer })
-		return
+		-- never back into someone
+		if stripClear(state, 0, -(state.chassis.Size.Z + 8), 0) then
+			VehicleService.setAIInput(state.car, { throttle = -1, steer = -steer })
+			return
+		end
+		state.reverseUntil = now
 	end
 
 	-- slow down for sharp turns
@@ -208,7 +311,8 @@ function Driver.drive(state: State, target: Vector3, desiredSpeed: number, dt: n
 	-- road manners: stop short of whatever is in the lane
 	local opts = options or {}
 	state.blockedBy = nil
-	if not opts.reckless and now >= state.passUntil then
+	local crossingBlock = false
+	if not opts.reckless and not passing then
 		local gap, obstacle = Driver.obstacleAhead(state, speed, opts.ignore)
 		if obstacle then
 			local allowed = math.max(0, (gap - DRIVING.StopGap) * DRIVING.BrakeEagerness)
@@ -222,12 +326,28 @@ function Driver.drive(state: State, target: Vector3, desiredSpeed: number, dt: n
 				state.blockedBy = obstacle
 			end
 		end
+		-- give way to crossing traffic: stop short of where the paths cross
+		local crossAt, crossing = crossingAhead(state, speed, targetSpeed, opts.ignore)
+		if crossing then
+			local allowed = math.max(0, (crossAt - DRIVING.CrossingGap) * DRIVING.BrakeEagerness)
+			if allowed < targetSpeed then
+				targetSpeed = allowed
+				state.blockedBy = crossing
+				crossingBlock = true
+			end
+		end
 	end
-	if state.blockedBy and math.abs(speed) < 3 then
+	-- stuck behind something that isn't moving: go around it once the other lane is clear (never
+	-- around crossing traffic, which will be gone in a moment)
+	if state.blockedBy and not crossingBlock and math.abs(speed) < 3 then
 		state.blockedFor += dt
 		if state.blockedFor >= DRIVING.PassAfterSeconds then
-			state.blockedFor = 0
-			state.passUntil = now + DRIVING.PassSeconds
+			local blocker = state.blockedBy :: Obstacle
+			if stripClear(state, -LANE_OFFSET * 1.2, -12, DRIVING.PassLookAhead, blocker.instance) then
+				state.blockedFor = 0
+				state.passUntil = now + DRIVING.PassSeconds
+				state.passing = blocker.instance
+			end
 		end
 	elseif not state.blockedBy then
 		state.blockedFor = 0
@@ -276,12 +396,27 @@ function Driver.advance(state: State, choose: (state: State) -> string): boolean
 	return false
 end
 
--- Drives the lane from state.from to state.to.
+-- Drives the lane from state.from to state.to. Coming out of a junction it first aims for the
+-- start of its new lane just past the junction, so turns go round the corner in the right lane
+-- instead of cutting across the oncoming one toward a point far down the next road.
 function Driver.cruise(state: State, speed: number, dt: number, now: number, options: Options?)
 	local nodes = RoadGraph.nodes
 	local toNode = nodes[state.to]
-	local fromPos = if state.from and nodes[state.from] then nodes[state.from].position else state.chassis.Position
-	Driver.drive(state, Driver.laneTarget(fromPos, toNode.position), speed, dt, now, options)
+	local fromNode = if state.from then nodes[state.from] else nil
+	local fromPos = if fromNode then fromNode.position else state.chassis.Position
+	local target = Driver.laneTarget(fromPos, toNode.position)
+	if fromNode then
+		local flat = Vector3.new(toNode.position.X - fromPos.X, 0, toNode.position.Z - fromPos.Z)
+		local position = state.chassis.Position
+		local offset = Vector3.new(position.X - fromPos.X, 0, position.Z - fromPos.Z)
+		if flat.Magnitude > JUNCTION_EXIT * 2 and offset.Magnitude < JUNCTION_EXIT + 20 then
+			local dir = flat.Unit
+			if offset:Dot(dir) < JUNCTION_EXIT - 6 then
+				target = fromPos + dir * JUNCTION_EXIT + dir:Cross(Vector3.yAxis) * LANE_OFFSET
+			end
+		end
+	end
+	Driver.drive(state, target, speed, dt, now, options)
 end
 
 -- A random next node that isn't straight back, unless it's a dead end.

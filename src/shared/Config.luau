@@ -203,13 +203,18 @@ local Config = {
 	Driving = {
 		LookAhead = 18,
 		LookAheadPerSpeed = 1.1,
-		LaneHalfWidth = 6,
+		-- wide enough to catch a car drifting over the centre line, not one in the other lane
+		LaneHalfWidth = 7.5,
 		StopGap = 6,
 		-- how hard they brake toward the obstacle (allowed speed per stud of gap)
 		BrakeEagerness = 1.2,
 		PassAfterSeconds = 6,
 		PassSeconds = 3.5,
 		PassSpeed = 18,
+		-- the other lane must be clear this far ahead to pull out and pass
+		PassLookAhead = 70,
+		-- stop this far short of where a crossing car's path meets ours
+		CrossingGap = 14,
 		-- a sudden change of velocity this big, with a player's car this close and closing at
 		-- least this fast, counts as being rammed by that player
 		ImpactDeltaV = 16,

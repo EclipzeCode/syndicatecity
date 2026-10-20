@@ -5,7 +5,9 @@
 --
 -- Rolloff is InverseTapered: full volume within `near` studs, fading to silence at `far`.
 
+local ContentProvider = game:GetService("ContentProvider")
 local Debris = game:GetService("Debris")
+local TweenService = game:GetService("TweenService")
 
 local Sounds = {}
 
@@ -15,7 +17,12 @@ export type Def = {
 	near: number?,
 	far: number?,
 	looped: boolean?,
+	-- one-shots: cut off after this many seconds (with a short fade), for clips with long tails
+	length: number?,
 }
+
+-- the fade at the end of a cut-off one-shot
+local CUT_FADE = 0.15
 
 local DEFS: { [string]: Def } = {
 	-- engine loop (Roblox Resources "Car-Engine-Loop"); pitch follows speed and throttle
@@ -29,10 +36,10 @@ local DEFS: { [string]: Def } = {
 	Screech = { id = "rbxassetid://109487442763183", volume = 0.6, near = 15, far = 260, looped = true },
 	-- police wail, carries a long way
 	Siren = { id = "rbxassetid://4832498807", volume = 0.6, near = 30, far = 600, looped = true },
-	-- crashes by what the car hit
-	CrashCar = { id = "rbxassetid://138307089384990", volume = 0.8, near = 20, far = 350 },
-	CrashNature = { id = "rbxassetid://9125870971", volume = 0.9, near = 20, far = 300 },
-	CrashBuilding = { id = "rbxassetid://102683443968763", volume = 0.9, near = 20, far = 350 },
+	-- crashes, short and loud from the first frame: one for hitting another car, one for anything
+	-- else solid (buildings, trees, rocks)
+	CrashCar = { id = "rbxassetid://7340406550", volume = 1.1, near = 20, far = 350, length = 0.7 },
+	CrashBuilding = { id = "rbxassetid://102683443968763", volume = 0.8, near = 20, far = 350, length = 0.6 },
 	-- cargo: a box slid into the boot at the pickup, set down at the dropoff
 	CargoLoad = { id = "rbxassetid://9113721416", volume = 0.9, near = 10, far = 90 },
 	CargoUnload = { id = "rbxassetid://9117939398", volume = 0.9, near = 10, far = 90 },
@@ -66,12 +73,35 @@ function Sounds.play(name: string, parent: Instance, loudness: number?, pitch: n
 	sound.Volume *= loudness or 1
 	sound.PlaybackSpeed = pitch or 1
 	sound:Play()
+	local length = DEFS[name].length
+	if length then
+		local seconds = length / sound.PlaybackSpeed
+		task.delay(math.max(0, seconds - CUT_FADE), function()
+			if sound.Parent then
+				TweenService:Create(sound, TweenInfo.new(CUT_FADE), { Volume = 0 }):Play()
+			end
+		end)
+		Debris:AddItem(sound, seconds + 0.05)
+	end
 	sound.Ended:Once(function()
 		sound:Destroy()
 	end)
 	-- in case it never loads or ends
 	Debris:AddItem(sound, 15)
 	return sound
+end
+
+-- Loads every sound up front so the first crash or ring plays the moment it happens instead of
+-- waiting for the download. Yields; call it from a spawned thread.
+function Sounds.preload()
+	local holder = Instance.new("Folder")
+	local list = {}
+	for name in DEFS do
+		local sound = Sounds.make(name, holder)
+		table.insert(list, sound)
+	end
+	ContentProvider:PreloadAsync(list)
+	holder:Destroy()
 end
 
 return Sounds

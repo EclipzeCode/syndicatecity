@@ -4,8 +4,8 @@
 --   * tyres: a different loop on pavement, dirt, grass and sand, louder the faster the car goes
 --   * a tyre screech when braking hard or sliding sideways
 --   * the police siren while a patrol car's Siren attribute is on
---   * crashes: a sudden knock plays a sound for what the car hit (another car, a tree or rock,
---     a building or anything else built)
+--   * crashes: a sudden knock plays a short bang (one for another car, one for anything else
+--     solid) and cartoon effects at the point of impact (CrashEffects)
 -- The local player's own throttle comes from their seat; for other cars (AI cars are simulated
 -- on the server) it's read from how the car is speeding up. Nothing here replicates.
 
@@ -14,6 +14,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 
 local Config = require(ReplicatedStorage.Shared.Config)
+local CrashEffects = require(script.Parent.CrashEffects)
 local Sounds = require(ReplicatedStorage.Shared.Sounds)
 local VehiclePhysics = require(ReplicatedStorage.Shared.VehiclePhysics)
 
@@ -168,40 +169,55 @@ local function vehicleOf(instance: Instance): Model?
 	return nil
 end
 
--- What the car just hit: "car" (and which), "nature", "building", or nil for nothing solid
--- (a hard landing, a person).
-local function classifyHit(fx: CarSound): (string?, Model?)
+-- What the car just hit: "car" (and which car), "nature", "building", or nil for nothing solid
+-- (a hard landing, a person), and the part it hit.
+local function classifyHit(fx: CarSound): (string?, Model?, BasePart?)
 	local chassis = fx.chassis
 	overlapParams.FilterDescendantsInstances = { fx.car }
 	local parts = workspace:GetPartBoundsInBox(chassis.CFrame, chassis.Size + Vector3.new(5, 1, 5), overlapParams)
 	-- anything that doesn't reach above the bottom of the body is driven over, not hit
 	local floor = chassis.Position.Y - chassis.Size.Y / 2 + 0.5
-	local found: string? = nil
+	local found: string?, foundPart: BasePart? = nil, nil
 	for _, part in parts do
 		local other = vehicleOf(part)
 		if other then
-			return "car", other
+			return "car", other, part
 		end
 		local model = part:FindFirstAncestorOfClass("Model")
 		if isGround(part, floor) or (model and model:FindFirstChildOfClass("Humanoid")) then
 			continue
 		end
 		if isNature(part) then
-			found = "nature"
+			found, foundPart = "nature", part
 		elseif found == nil then
-			found = "building"
+			found, foundPart = "building", part
 		end
 	end
-	return found, nil
+	return found, nil, foundPart
 end
 
-local CRASH_SOUNDS = { car = "CrashCar", nature = "CrashNature", building = "CrashBuilding" }
+-- trees and rocks thud like walls do
+local CRASH_SOUNDS = { car = "CrashCar", nature = "CrashBuilding", building = "CrashBuilding" }
+-- effects only for crashes this close to the camera
+local EFFECTS_RANGE = 250
+
+-- Where the car touched `part`: the point on the part's box nearest the car, at body height.
+local function contactPoint(chassis: BasePart, part: BasePart): Vector3
+	local rel = part.CFrame:PointToObjectSpace(chassis.Position)
+	local half = part.Size / 2
+	local nearest = part.CFrame:PointToWorldSpace(Vector3.new(
+		math.clamp(rel.X, -half.X, half.X),
+		math.clamp(rel.Y, -half.Y, half.Y),
+		math.clamp(rel.Z, -half.Z, half.Z)
+	))
+	return Vector3.new(nearest.X, chassis.Position.Y + 1, nearest.Z)
+end
 
 local function checkCrash(fx: CarSound, change: number, now: number)
 	if change < CRASH_DELTA_V or now - fx.lastCrash < CRASH_COOLDOWN then
 		return
 	end
-	local kind, other = classifyHit(fx)
+	local kind, other, part = classifyHit(fx)
 	if not kind then
 		return
 	end
@@ -218,6 +234,10 @@ local function checkCrash(fx: CarSound, change: number, now: number)
 	end
 	local loudness = math.clamp(change / 45, 0.45, 1.3)
 	Sounds.play(CRASH_SOUNDS[kind], fx.chassis, loudness, 0.92 + math.random() * 0.16)
+	local camera = workspace.CurrentCamera
+	if part and camera and (camera.CFrame.Position - fx.chassis.Position).Magnitude < EFFECTS_RANGE then
+		CrashEffects.play(contactPoint(fx.chassis, part), kind, loudness)
+	end
 end
 
 ---------------------------------------------------------------------------------------------------
@@ -422,6 +442,8 @@ function CarSoundController.init()
 		track(car)
 	end
 	RunService.Heartbeat:Connect(update)
+	-- so the first crash sounds the moment it happens, not after a download
+	task.spawn(Sounds.preload)
 end
 
 -- Studio test hook: what each nearby car is playing.
